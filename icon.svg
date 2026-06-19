@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="80" fill="#16213e"/>
+  <path d="M80 350 Q150 280 200 320 Q250 360 300 300 Q350 240 430 280" stroke="#00BCD4" stroke-width="24" fill="none" stroke-linecap="round"/>
+  <path d="M80 400 Q180 340 250 380 Q320 420 430 350" stroke="#4CAF50" stroke-width="16" fill="none" stroke-linecap="round" opacity="0.7"/>
+  <path d="M120 300 Q160 260 200 290" stroke="#64B5F6" stroke-width="12" fill="none" stroke-linecap="round" opacity="0.6"/>
+  <circle cx="300" cy="300" r="30" fill="#2196F3" opacity="0.5"/>
+  <text x="256" y="180" text-anchor="middle" font-family="Arial,sans-serif" font-weight="bold" font-size="72" fill="#64B5F6">RIOS</text>
+</svg>
