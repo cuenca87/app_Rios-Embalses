@@ -183,7 +183,7 @@ const OGC_SUBTRAMOS = "https://wmts.mapama.gob.es/sig-api/ogc/features/v1/collec
 const PAGE_LIMIT = 1000;
 
 // --- Map ---
-const map = L.map("map").setView([40.0, -3.5], 6);
+const map = L.map("map").setView([39.5, -3.0], 5);
 const pnoa = L.tileLayer("https://www.ign.es/wmts/pnoa-ma?layer=OI.OrthoimageCoverage&style=default&tilematrixset=GoogleMapsCompatible&Service=WMTS&Request=GetTile&Version=1.0.0&format=image/jpeg&TileMatrix={z}&TileRow={y}&TileCol={x}", { attribution:"PNOA &copy; IGN", maxZoom:19 });
 const ignBase = L.tileLayer.wms("https://www.ign.es/wms-inspire/ign-base?", { layers:"IGNBaseTodo", format:"image/png", transparent:false, attribution:"&copy; IGN" });
 const osm = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution:"&copy; OSM" });
