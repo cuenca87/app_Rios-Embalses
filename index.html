@@ -91,6 +91,19 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
     font-size:12px; pointer-events:none;
 }
 
+#progress-bar {
+    display:none; margin:4px 16px 6px; height:22px; background:#1a1a2e; border:1px solid #0f3460;
+    border-radius:4px; position:relative; overflow:hidden; flex-shrink:0;
+}
+#progress-bar > div {
+    height:100%; background:linear-gradient(90deg,#0f3460,#1565C0); transition:width .3s;
+    border-radius:3px;
+}
+#progress-bar > span {
+    position:absolute; top:0; left:8px; right:8px; line-height:22px;
+    font-size:11px; color:#e0e0e0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+
 @media (max-width: 768px) {
     body { flex-direction:column; }
     #sidebar {
@@ -154,10 +167,12 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
             <div id="suggestions-presa" class="suggestions-list"></div>
         </div>
         <button class="action" id="btn-presa" onclick="searchPresa()">Buscar</button>
+        <button class="action" id="btn-presa-analisis" onclick="analizarPresa()" disabled style="margin-top:6px;background:linear-gradient(135deg,#1B5E20,#4CAF50);">Analizar cauces y ARPSIs</button>
     </div>
 
     <div id="result-panel">
         <h3>Resultado</h3>
+        <div id="progress-bar"><div></div><span></span></div>
         <div id="result-box"><span class="r-info">Seleccione una opcion y busque.</span></div>
     </div>
 
@@ -270,6 +285,13 @@ let lastGeoJSON = null;
 let lastRiverCodPfaf = null;
 function setResult(h) { document.getElementById("result-box").innerHTML = h; }
 function addResult(h) { document.getElementById("result-box").innerHTML += h; }
+function showProgress(pct, label) {
+    const bar = document.getElementById("progress-bar");
+    bar.style.display = "block";
+    bar.querySelector("div").style.width = Math.min(pct, 100) + "%";
+    bar.querySelector("span").textContent = label;
+}
+function hideProgress() { document.getElementById("progress-bar").style.display = "none"; }
 function clearMap() {
     if (resultLayer) { map.removeLayer(resultLayer); resultLayer = null; }
     if (arpsiLayer) { map.removeLayer(arpsiLayer); arpsiLayer = null; }
@@ -277,6 +299,7 @@ function clearMap() {
     if (traceLayer) { map.removeLayer(traceLayer); traceLayer = null; }
     lastRiverCodPfaf = null;
     document.getElementById("btn-trazar").disabled = true;
+    document.getElementById("btn-presa-analisis").disabled = true;
     lastGeoJSON = null;
     document.getElementById("dl-btn").disabled = true;
 }
@@ -423,95 +446,111 @@ const getEmbalseName = setupAutocomplete("inp-embalse", "suggestions-embalse", O
     "&sortby=nombre"
 );
 
-// --- Shared: trace downstream to sea from a given code + features ---
-async function traceToSea(startCode, startFeats) {
+// --- Helper: fetch a complete river by Pfafstetter code ---
+async function fetchRiverByCode(code) {
+    const filter = encodeURIComponent(`cod_pfafrio = '${code}'`);
+    const resp = await fetch(`${OGC_RIOS}?f=application%2Fgeo%2Bjson&limit=1&filter=${filter}&filter-lang=cql-text`);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data.features?.[0] || null;
+}
+
+function flatCoords(geom) {
+    if (geom.type === "LineString") return geom.coordinates;
+    const segs = geom.coordinates.map(c => c.slice());
+    if (segs.length <= 1) return segs[0] || [];
+    const chain = [segs.splice(0, 1)[0]];
+    while (segs.length) {
+        const head = chain[0][0];
+        const tail = chain[chain.length - 1];
+        const tp = tail[tail.length - 1];
+        let bI = 0, bD = Infinity, bH = "";
+        const d2 = (a, b) => (a[0]-b[0])**2 + (a[1]-b[1])**2;
+        for (let i = 0; i < segs.length; i++) {
+            const s = segs[i], sf = s[0], sl = s[s.length - 1];
+            const pairs = [[d2(tp,sf),"a"],[d2(tp,sl),"ar"],[d2(head,sl),"p"],[d2(head,sf),"pr"]];
+            for (const [dist, how] of pairs) { if (dist < bD) { bD = dist; bI = i; bH = how; } }
+        }
+        const seg = segs.splice(bI, 1)[0];
+        if (bH === "a") chain.push(seg);
+        else if (bH === "ar") { seg.reverse(); chain.push(seg); }
+        else if (bH === "p") chain.unshift(seg);
+        else { seg.reverse(); chain.unshift(seg); }
+    }
+    const result = chain[0].slice();
+    for (let i = 1; i < chain.length; i++) {
+        const prev = result[result.length - 1], next = chain[i];
+        const skip = (prev[0] === next[0][0] && prev[1] === next[0][1]) ? 1 : 0;
+        for (let j = skip; j < next.length; j++) result.push(next[j]);
+    }
+    return result;
+}
+
+// --- Shared: trace downstream to sea using complete river geometries ---
+async function traceToSea(startCode, onProgress) {
     const allTraceFeats = [];
     const traceNames = [];
-    let childCode = startCode;
-    let childFeats = startFeats;
+    const maxSteps = startCode.length;
+    let step = 0;
 
-    while (childCode.length > 1) {
-        let parentCode = null, parentSubtramos = [];
-        for (let len = childCode.length - 1; len >= 1; len--) {
-            const candidate = childCode.substring(0, len);
-            const filter = encodeURIComponent(`cod_pfafrio = '${candidate}'`);
-            let feats = [], si = 0;
-            while (true) {
-                const resp = await fetch(`${OGC_SUBTRAMOS}?f=application%2Fgeo%2Bjson&limit=${PAGE_LIMIT}&startIndex=${si}&filter=${filter}&filter-lang=cql-text`);
-                if (!resp.ok) break;
-                const d = await resp.json(), fs = d.features || [];
-                feats = feats.concat(fs);
-                if (fs.length < PAGE_LIMIT) break;
-                si += fs.length;
-            }
-            if (feats.length > 0) { parentCode = candidate; parentSubtramos = feats; break; }
+    if (onProgress) onProgress(step, maxSteps, "Obteniendo rio inicial...");
+    const startFeat = await fetchRiverByCode(startCode);
+    if (!startFeat) return { features: [], names: [] };
+
+    const sc = flatCoords(startFeat.geometry);
+    step++;
+    if (onProgress) onProgress(step, maxSteps, "Calculando elevaciones...");
+    const eF = await getElevation(sc[0][0], sc[0][1]);
+    const eL = await getElevation(sc[sc.length - 1][0], sc[sc.length - 1][1]);
+    let confluencePt = (eF != null && eL != null) ? (eF <= eL ? sc[0] : sc[sc.length - 1])
+        : sc[sc.length - 1];
+
+    let currentCode = startCode;
+
+    while (currentCode.length > 1) {
+        let parentCode = null, parentFeat = null;
+        for (let len = currentCode.length - 1; len >= 1; len--) {
+            const candidate = currentCode.substring(0, len);
+            if (onProgress) onProgress(step, maxSteps, `Buscando rio padre (${candidate})...`);
+            const feat = await fetchRiverByCode(candidate);
+            if (feat) { parentCode = candidate; parentFeat = feat; break; }
         }
-        if (!parentCode || !parentSubtramos.length) break;
+        if (!parentCode || !parentFeat) break;
 
-        const parentName = parentSubtramos[0].properties?.nom_rio || parentCode;
+        const parentName = parentFeat.properties?.nom_rio || parentCode;
+        step++;
+        if (onProgress) onProgress(step, maxSteps, `Trazando: ${parentName}...`);
+        const pc = flatCoords(parentFeat.geometry);
+        const epF = await getElevation(pc[0][0], pc[0][1]);
+        const epL = await getElevation(pc[pc.length - 1][0], pc[pc.length - 1][1]);
+        const desembIdx = (epF != null && epL != null)
+            ? (epF >= epL ? pc.length - 1 : 0)
+            : pc.length - 1;
 
-        // Find confluence: child endpoint closest to parent, and child's farthest point (headwater)
-        let confluenceElev = null, confluencePt = null, headwaterPt = null;
-        try {
-            const endpoints = [];
-            for (const cf of childFeats) {
-                const coords = cf.geometry?.coordinates;
-                if (!coords || !coords.length) continue;
-                endpoints.push(coords[0]);
-                endpoints.push(coords[coords.length - 1]);
-            }
-            // Confluence = child endpoint closest to parent
-            let minDist = Infinity;
-            for (const ep of endpoints) {
-                const pt = turf.point(ep);
-                for (const ps of parentSubtramos) {
-                    try { const d = turf.pointToLineDistance(pt, ps, {units:"kilometers"}); if (d < minDist) { minDist = d; confluencePt = ep; } } catch {}
-                }
-            }
-            // Headwater = child endpoint farthest from confluence
-            if (confluencePt) {
-                let maxDist = 0;
-                const cPt = turf.point(confluencePt);
-                for (const ep of endpoints) {
-                    const d = turf.distance(cPt, turf.point(ep), {units:"kilometers"});
-                    if (d > maxDist) { maxDist = d; headwaterPt = ep; }
-                }
-            }
-        } catch {}
-
-        // Get confluence elevation on parent
-        let confDistFromHead = null;
-        if (confluencePt) {
-            let minDist = Infinity, closest = null;
-            const cPt = turf.point(confluencePt);
-            for (const ps of parentSubtramos) { try { const d = turf.pointToLineDistance(cPt, ps, {units:"kilometers"}); if (d < minDist) { minDist = d; closest = ps; } } catch {} }
-            if (closest) { const rc = getMidpoint(closest); if (rc) confluenceElev = await getElevation(rc[0], rc[1]); }
-            if (headwaterPt) confDistFromHead = turf.distance(turf.point(headwaterPt), cPt, {units:"kilometers"});
+        let minDist = Infinity, cutIdx = 0;
+        for (let i = 0; i < pc.length; i++) {
+            const dx = pc[i][0] - confluencePt[0], dy = pc[i][1] - confluencePt[1];
+            const d = dx * dx + dy * dy;
+            if (d < minDist) { minDist = d; cutIdx = i; }
         }
 
-        // Keep parent subtramos downstream: must have elev <= confluence AND be farther from headwater than confluence
-        const headPt = headwaterPt ? turf.point(headwaterPt) : null;
-        const downstreamParent = [];
-        for (const ps of parentSubtramos) {
-            const rc = getMidpoint(ps);
-            if (!rc) { downstreamParent.push(ps); continue; }
-            const elev = await getElevation(rc[0], rc[1]);
-            ps.properties._elev = elev;
-            const elevOk = (confluenceElev == null || elev == null || elev <= confluenceElev);
-            let distOk = true;
-            if (headPt && confDistFromHead != null) {
-                const d = turf.distance(headPt, turf.point(rc), {units:"kilometers"});
-                distOk = d >= confDistFromHead * 0.9;
-            }
-            if (elevOk && distOk) downstreamParent.push(ps);
+        const trimmed = desembIdx === pc.length - 1
+            ? pc.slice(cutIdx) : pc.slice(0, cutIdx + 1);
+
+        if (trimmed.length >= 2) {
+            allTraceFeats.push({
+                type: "Feature",
+                geometry: { type: "LineString", coordinates: trimmed },
+                properties: { nom_rio: parentName, cod_pfafrio: parentCode,
+                    _traceRiver: parentName, _elev: desembIdx === pc.length - 1 ? epL : epF }
+            });
+            traceNames.push(parentName);
         }
 
-        downstreamParent.forEach(f => { f.properties._traceRiver = parentName; });
-        allTraceFeats.push(...downstreamParent);
-        traceNames.push(parentName);
-        childCode = parentCode;
-        childFeats = downstreamParent;
+        confluencePt = pc[desembIdx];
+        currentCode = parentCode;
     }
+
     return { features: allTraceFeats, names: traceNames };
 }
 
@@ -540,9 +579,12 @@ async function trazarAlMar() {
     document.getElementById("btn-rio").disabled = true;
 
     addResult(`\n\n<span class="r-label">Trazando recorrido al mar...</span>`);
+    showProgress(0, "Iniciando trazado al mar...");
 
     try {
-        const trace = await traceToSea(lastRiverCodPfaf, lastGeoJSON.features);
+        const trace = await traceToSea(lastRiverCodPfaf, (step, max, label) => {
+            showProgress((step / (max + 1)) * 90, label);
+        });
 
         if (trace.features.length) {
             const colorMap = buildTraceColorMap(trace.names);
@@ -551,7 +593,7 @@ async function trazarAlMar() {
                 onEachFeature: (f,ly) => { const rp=f.properties||{}; ly.bindPopup(`<b>${rp.nom_rio||"-"}</b><br>Elevacion: ${rp._elev!=null?rp._elev.toFixed(0)+" m":"-"}`); }
             }).addTo(map);
 
-            // ARPSIs along the full downstream path
+            showProgress(92, "Buscando ARPSIs...");
             const allDownstream = lastGeoJSON.features.concat(trace.features);
             const arpsiHits = await findArpsis(allDownstream);
             if (arpsiHits.length) {
@@ -561,6 +603,7 @@ async function trazarAlMar() {
                 }).addTo(map);
             }
 
+            showProgress(100, "Completado");
             const allBounds = resultLayer.getBounds().extend(traceLayer.getBounds());
             if (arpsiLayer) allBounds.extend(arpsiLayer.getBounds());
             map.fitBounds(allBounds.pad(0.1));
@@ -578,7 +621,7 @@ async function trazarAlMar() {
         }
 
     } catch(e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
-    finally { document.getElementById("btn-trazar").disabled=false; document.getElementById("btn-rio").disabled=false; }
+    finally { hideProgress(); document.getElementById("btn-trazar").disabled=false; document.getElementById("btn-rio").disabled=false; }
 }
 
 let lastEmbalseFeats = null;
@@ -616,167 +659,164 @@ async function searchEmbalse(name) {
     finally { document.getElementById("btn-embalse").disabled = false; }
 }
 
-async function analizarEmbalse() {
-    if (!lastEmbalseFeats || !resultLayer) return;
-    document.getElementById("btn-embalse").disabled = true;
-    document.getElementById("btn-embalse-analisis").disabled = true;
+// --- Shared: analyse rivers upstream/downstream of an embalse polygon ---
+async function runCauceAnalysis(embalseFeats) {
     if (extraLayer) { map.removeLayer(extraLayer); extraLayer = null; }
     if (traceLayer) { map.removeLayer(traceLayer); traceLayer = null; }
     if (arpsiLayer) { map.removeLayer(arpsiLayer); arpsiLayer = null; }
 
-    addResult(`\n\n<span class="r-label">Analizando cauces y ARPSIs...</span>`);
+    showProgress(0, "Buscando rios cercanos...");
+    const feats = embalseFeats;
+    const embCent = getCentroid({ type:"FeatureCollection", features:[feats[0]] });
+    const SEARCH_BUFFER = 0.02;
+    const searchBbox = embCent
+        ? `${embCent[0]-SEARCH_BUFFER},${embCent[1]-SEARCH_BUFFER},${embCent[0]+SEARCH_BUFFER},${embCent[1]+SEARCH_BUFFER}`
+        : `${resultLayer.getBounds().getWest()-SEARCH_BUFFER},${resultLayer.getBounds().getSouth()-SEARCH_BUFFER},${resultLayer.getBounds().getEast()+SEARCH_BUFFER},${resultLayer.getBounds().getNorth()+SEARCH_BUFFER}`;
+    const rioFeats = await fetchBbox(OGC_RIOS, searchBbox, PAGE_LIMIT);
 
-    try {
-        const feats = lastEmbalseFeats;
-        const embCent = getCentroid({ type:"FeatureCollection", features:[feats[0]] });
-        const SEARCH_BUFFER = 0.02;
-        const searchBbox = embCent
-            ? `${embCent[0]-SEARCH_BUFFER},${embCent[1]-SEARCH_BUFFER},${embCent[0]+SEARCH_BUFFER},${embCent[1]+SEARCH_BUFFER}`
-            : `${resultLayer.getBounds().getWest()-SEARCH_BUFFER},${resultLayer.getBounds().getSouth()-SEARCH_BUFFER},${resultLayer.getBounds().getEast()+SEARCH_BUFFER},${resultLayer.getBounds().getNorth()+SEARCH_BUFFER}`;
-        const rioFeats = await fetchBbox(OGC_RIOS, searchBbox, PAGE_LIMIT);
+    showProgress(10, "Filtrando intersecciones...");
+    const intersecting = rioFeats.filter(rf => {
+        try { for (const ef of feats) { if (turf.booleanIntersects(rf, ef)) return true; } return false; } catch { return false; }
+    });
 
-        const embalsePoint = embCent ? turf.point(embCent) : null;
-        const intersecting = embalsePoint ? rioFeats.filter(rf => {
-            try { return turf.pointToLineDistance(embalsePoint, rf, {units:"kilometers"}) < 2; } catch { return false; }
-        }) : [];
+    if (!intersecting.length) { addResult(`\n\n<span class="r-info">No se encontro rio asociado al embalse.</span>`); return; }
 
-        if (intersecting.length) {
-            const rioLength = {};
-            intersecting.forEach(f => { const n=f.properties?.nom_rio, l=f.properties?.long_rio_m||0; if(n&&(!rioLength[n]||l>rioLength[n]))rioLength[n]=l; });
-            const sortedRios = Object.entries(rioLength).sort((a,b) => b[1]-a[1]);
-            const mainRiver = sortedRios[0][0];
-            const mainRiverFeat = intersecting.find(f => f.properties?.nom_rio === mainRiver);
-            const codPfaf = mainRiverFeat?.properties?.cod_pfafrio;
+    const rioLength = {};
+    intersecting.forEach(f => { const n=f.properties?.nom_rio, l=f.properties?.long_rio_m||0; if(n&&(!rioLength[n]||l>rioLength[n]))rioLength[n]=l; });
+    const sortedRios = Object.entries(rioLength).sort((a,b) => b[1]-a[1]);
+    const mainRiver = sortedRios[0][0];
+    const mainRiverFeat = intersecting.find(f => f.properties?.nom_rio === mainRiver);
+    const codPfaf = mainRiverFeat?.properties?.cod_pfafrio;
 
-            let subtramos = [];
-            if (codPfaf) {
-                let si = 0;
-                const filter = encodeURIComponent(`cod_pfafrio = '${codPfaf}'`);
-                while (true) {
-                    const resp = await fetch(`${OGC_SUBTRAMOS}?f=application%2Fgeo%2Bjson&limit=${PAGE_LIMIT}&startIndex=${si}&filter=${filter}&filter-lang=cql-text`);
-                    if (!resp.ok) break;
-                    const d = await resp.json(), fs = d.features || [];
-                    subtramos = subtramos.concat(fs);
-                    if (fs.length < PAGE_LIMIT) break;
-                    si += fs.length;
-                }
-            }
+    showProgress(20, `Obteniendo rio ${mainRiver}...`);
+    const fullRiver = codPfaf ? await fetchRiverByCode(codPfaf) : null;
+    const rc = fullRiver ? flatCoords(fullRiver.geometry) : null;
 
-            let refElev = null;
-            if (embCent && subtramos.length) {
-                const embPt = turf.point(embCent);
-                let minDist = Infinity, closestSeg = null;
-                for (const sf of subtramos) { try { const d=turf.pointToLineDistance(embPt,sf,{units:"kilometers"}); if(d<minDist){minDist=d;closestSeg=sf;} } catch {} }
-                if (closestSeg) { const rc=getMidpoint(closestSeg); if(rc) refElev=await getElevation(rc[0],rc[1]); }
-            }
+    if (!rc || rc.length < 2) { addResult(`\n\n<span class="r-info">No se pudo obtener la geometria del rio principal.</span>`); return; }
 
-            let upCount=0, dnCount=0;
-            const downstreamSegs = [];
-            for (const sf of subtramos) {
-                const rc=getMidpoint(sf);
-                if(!rc){sf.properties._pos="aguas abajo";dnCount++;downstreamSegs.push(sf);continue;}
-                const elev=await getElevation(rc[0],rc[1]);
-                sf.properties._elev=elev;
-                if(elev!=null&&refElev!=null&&elev>refElev){sf.properties._pos="aguas arriba";upCount++;}
-                else{sf.properties._pos="aguas abajo";dnCount++;downstreamSegs.push(sf);}
-            }
+    showProgress(30, "Analizando interseccion con embalse...");
+    const insideIdx = [];
+    for (let i = 0; i < rc.length; i++) {
+        try {
+            const pt = turf.point(rc[i]);
+            for (const ef of feats) { if (turf.booleanPointInPolygon(pt, ef)) { insideIdx.push(i); break; } }
+        } catch {}
+    }
 
-            const otherFeats = intersecting.filter(f => f.properties?.nom_rio !== mainRiver);
-            otherFeats.forEach(f => { f.properties._pos = "aguas arriba"; });
-
-            const allSegments = subtramos.concat(otherFeats);
-            extraLayer = L.geoJSON({type:"FeatureCollection",features:allSegments}, {
-                style: f => {
-                    if(f.properties?.cod_pfafrio===codPfaf) return f.properties?._pos==="aguas arriba"?{color:"#4CAF50",weight:3,opacity:0.9}:{color:"#FF5722",weight:3,opacity:0.9};
-                    return {color:"#4CAF50",weight:2.5,opacity:0.7};
-                },
-                onEachFeature: (f,ly) => { const rp=f.properties||{}; ly.bindPopup(`<b>${rp.nom_rio||"-"}</b>${rp.cod_pfafrio===codPfaf?" (principal)":""}<br>${rp._pos||"-"}<br>Elevacion: ${rp._elev!=null?rp._elev.toFixed(0)+" m":"-"}`); }
-            }).addTo(map);
-
-            const trace = await traceToSea(codPfaf, downstreamSegs);
-            const allDownstream = downstreamSegs.concat(trace.features);
-
-            if (trace.features.length) {
-                const colorMap = buildTraceColorMap(trace.names);
-                traceLayer = L.geoJSON({type:"FeatureCollection",features:trace.features}, {
-                    style: f => ({color:colorMap[f.properties?._traceRiver]||"#E91E63",weight:3.5,opacity:0.85}),
-                    onEachFeature: (f,ly) => { const rp=f.properties||{}; ly.bindPopup(`<b>${rp.nom_rio||"-"}</b><br>Elevacion: ${rp._elev!=null?rp._elev.toFixed(0)+" m":"-"}`); }
-                }).addTo(map);
-            }
-
-            const arpsiResult = await findArpsis(allDownstream);
-            if (arpsiResult.length) {
-                arpsiLayer = L.geoJSON({type:"FeatureCollection",features:arpsiResult}, {
-                    style: () => ({color:"#FF9800",weight:2.5,opacity:0.8,dashArray:"6 4",fillOpacity:0}),
-                    onEachFeature: (f,ly) => { const ap=f.properties||{}; ly.bindPopup(`<b>ARPSI: ${ap.apsf_name||"-"}</b><br>Codigo: ${ap.apsfr_code||"-"}`); }
-                }).addTo(map);
-            }
-
-            addResult(`\n`);
-            if(refElev!=null) addResult(`\n<span class="r-info">Elevacion de referencia: ${refElev.toFixed(0)} m</span>`);
-            addResult(`\n\n<span class="r-name">Rio principal: ${mainRiver}</span>`);
-            addResult(`\n<span class="r-info">  ${subtramos.length} subtramos (${upCount} aguas arriba, ${dnCount} aguas abajo)</span>`);
-
-            if(sortedRios.length>1){addResult(`\n\n<span class="r-label">Afluentes al embalse:</span>`);sortedRios.slice(1).forEach(([n])=>addResult(`\n  - ${n}`));}
-
-            if(trace.names.length){const colorMap=buildTraceColorMap(trace.names);addResult(`\n\n<span class="r-label">Recorrido al mar:</span>`);addResult(`\n  <span style="color:#FF5722;">●</span> ${mainRiver} (aguas abajo embalse)`);trace.names.forEach(n=>addResult(`\n  <span style="color:${colorMap[n]};">●</span> ${n}`));}
-
-            if(arpsiResult.length){const ua=[...new Set(arpsiResult.map(f=>f.properties?.apsf_name).filter(Boolean))];addResult(`\n\n<span class="r-label">ARPSIs aguas abajo (${ua.length}):</span>`);ua.forEach(n=>addResult(`\n  - ${n}`));}
-            else addResult(`\n\n<span class="r-info">No se encontraron ARPSIs aguas abajo.</span>`);
-
-            addResult(`\n\n<span class="r-info" style="font-size:11px;">Verde = aguas arriba / afluentes  |  Rojo = aguas abajo  |  Colores = recorrido al mar  |  Naranja = ARPSIs</span>`);
-            const allBounds = resultLayer.getBounds().extend(extraLayer.getBounds());
-            if(traceLayer)allBounds.extend(traceLayer.getBounds());
-            if(arpsiLayer)allBounds.extend(arpsiLayer.getBounds());
-            map.fitBounds(allBounds.pad(0.1));
-        } else {
-            addResult(`\n\n<span class="r-info">No se encontro rio asociado al embalse.</span>`);
+    let cutIdx;
+    if (insideIdx.length) {
+        cutIdx = insideIdx[Math.floor(insideIdx.length / 2)];
+    } else {
+        let minD = Infinity; cutIdx = 0;
+        for (let i = 0; i < rc.length; i++) {
+            const dx = rc[i][0] - embCent[0], dy = rc[i][1] - embCent[1];
+            const d = dx*dx + dy*dy;
+            if (d < minD) { minD = d; cutIdx = i; }
         }
-    } catch(e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
-    finally { document.getElementById("btn-embalse").disabled=false; document.getElementById("btn-embalse-analisis").disabled=false; }
-}
+    }
 
-// --- PRESAS ---
-const getPresaName = setupAutocomplete("inp-presa", "suggestions-presa", OGC_PRESAS, "nombre",
-    p => p.cauce ? `Cauce: ${p.cauce}` : null,
-    name => searchPresa(name)
-);
+    showProgress(40, "Calculando elevaciones...");
+    const elevFirst = await getElevation(rc[0][0], rc[0][1]);
+    const elevLast = await getElevation(rc[rc.length-1][0], rc[rc.length-1][1]);
+    const refElev = await getElevation(rc[cutIdx][0], rc[cutIdx][1]);
 
-async function searchPresa(name) {
-    if (!name) name = getPresaName();
-    if (!name) { setResult("Escriba un nombre de presa."); return; }
-    clearMap();
-    document.getElementById("info-banner").style.display = "none";
-    document.getElementById("btn-presa").disabled = true;
-    setResult(`<span class="r-info">Buscando presa "${name}"...</span>`);
-    try {
-        const filter = encodeURIComponent(`nombre = '${name}'`);
-        const resp = await fetch(`${OGC_PRESAS}?f=application%2Fgeo%2Bjson&limit=50&filter=${filter}&filter-lang=cql-text`);
-        if (!resp.ok) throw new Error(`API error: ${resp.status}`);
-        const data = await resp.json();
-        const feats = data.features || [];
-        if (!feats.length) { setResult(`<span class="r-info">No se encontro "${name}".</span>`); return; }
-        lastGeoJSON = { type:"FeatureCollection", features:feats };
-        resultLayer = L.geoJSON(lastGeoJSON, {
-            pointToLayer: (f,ll) => L.circleMarker(ll, { radius:8, fillColor:"#FF9800", color:"#E65100", weight:2, fillOpacity:0.8 }),
-            onEachFeature: (f,ly) => { const p=f.properties||{}; ly.bindPopup(`<b>${p.nombre||"-"}</b><br>Cauce: ${p.cauce||"-"}<br>Tipologia: ${p.tipologia||"-"}<br>Fase: ${p.fase||"-"}<br>Provincia: ${p.provincia||"-"}`); }
+    const firstIsCabecera = (elevFirst != null && elevLast != null)
+        ? elevFirst >= elevLast : true;
+
+    const upCoords = firstIsCabecera ? rc.slice(0, cutIdx + 1) : rc.slice(cutIdx);
+    const dnCoords = firstIsCabecera ? rc.slice(cutIdx) : rc.slice(0, cutIdx + 1);
+
+    const upFeat = upCoords.length >= 2 ? {
+        type: "Feature", geometry: { type: "LineString", coordinates: upCoords },
+        properties: { nom_rio: mainRiver, cod_pfafrio: codPfaf, _pos: "aguas arriba",
+            _elev: firstIsCabecera ? elevFirst : elevLast }
+    } : null;
+    const dnFeat = dnCoords.length >= 2 ? {
+        type: "Feature", geometry: { type: "LineString", coordinates: dnCoords },
+        properties: { nom_rio: mainRiver, cod_pfafrio: codPfaf, _pos: "aguas abajo",
+            _elev: firstIsCabecera ? elevLast : elevFirst }
+    } : null;
+
+    const otherFeats = intersecting.filter(f => f.properties?.nom_rio !== mainRiver);
+    otherFeats.forEach(f => { f.properties._pos = "aguas arriba"; });
+
+    const allSegments = [upFeat, dnFeat].filter(Boolean).concat(otherFeats);
+    extraLayer = L.geoJSON({type:"FeatureCollection",features:allSegments}, {
+        style: f => {
+            if(f.properties?.cod_pfafrio===codPfaf) return f.properties?._pos==="aguas arriba"?{color:"#4CAF50",weight:3,opacity:0.9}:{color:"#FF5722",weight:3,opacity:0.9};
+            return {color:"#4CAF50",weight:2.5,opacity:0.7};
+        },
+        onEachFeature: (f,ly) => { const rp=f.properties||{}; ly.bindPopup(`<b>${rp.nom_rio||"-"}</b>${rp.cod_pfafrio===codPfaf?" (principal)":""}<br>${rp._pos||"-"}<br>Elevacion: ${rp._elev!=null?rp._elev.toFixed(0)+" m":"-"}`); }
+    }).addTo(map);
+
+    showProgress(50, "Trazando recorrido al mar...");
+    const trace = await traceToSea(codPfaf, (step, max, label) => {
+        showProgress(50 + (step / (max + 1)) * 40, label);
+    });
+    const allDownstream = (dnFeat ? [dnFeat] : []).concat(trace.features);
+
+    if (trace.features.length) {
+        const colorMap = buildTraceColorMap(trace.names);
+        traceLayer = L.geoJSON({type:"FeatureCollection",features:trace.features}, {
+            style: f => ({color:colorMap[f.properties?._traceRiver]||"#E91E63",weight:3.5,opacity:0.85}),
+            onEachFeature: (f,ly) => { const rp=f.properties||{}; ly.bindPopup(`<b>${rp.nom_rio||"-"}</b><br>Elevacion: ${rp._elev!=null?rp._elev.toFixed(0)+" m":"-"}`); }
         }).addTo(map);
-        map.fitBounds(resultLayer.getBounds().pad(0.3));
-        document.getElementById("dl-btn").disabled = false;
-        const p = feats[0].properties||{};
-        const cent = getCentroid(lastGeoJSON);
-        const demar = cent ? findDemarcacion(cent[0], cent[1]) : null;
-        setResult(`<span class="r-name">${p.nombre||name}</span>\n\n<span class="r-label">Demarcacion:</span> ${demar||"-"}\n<span class="r-label">Cauce:</span> ${p.cauce||"-"}\n<span class="r-label">Tipologia:</span> ${p.tipologia||"-"}\n<span class="r-label">Fase:</span> ${p.fase||"-"}\n<span class="r-label">CCAA:</span> ${p.ccaa||"-"}\n<span class="r-label">Provincia:</span> ${p.provincia||"-"}\n<span class="r-label">Resultados:</span> ${feats.length}`);
-    } catch(e) { setResult(`<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
-    finally { document.getElementById("btn-presa").disabled = false; }
+    }
+
+    showProgress(92, "Buscando ARPSIs...");
+    const arpsiResult = await findArpsis(allDownstream);
+    if (arpsiResult.length) {
+        arpsiLayer = L.geoJSON({type:"FeatureCollection",features:arpsiResult}, {
+            style: () => ({color:"#FF9800",weight:2.5,opacity:0.8,dashArray:"6 4",fillOpacity:0}),
+            onEachFeature: (f,ly) => { const ap=f.properties||{}; ly.bindPopup(`<b>ARPSI: ${ap.apsf_name||"-"}</b><br>Codigo: ${ap.apsfr_code||"-"}`); }
+        }).addTo(map);
+    }
+
+    showProgress(100, "Completado");
+    addResult(`\n`);
+    if(refElev!=null) addResult(`\n<span class="r-info">Elevacion en el embalse: ${refElev.toFixed(0)} m</span>`);
+    if(elevFirst!=null) addResult(`\n<span class="r-info">Elevacion cabecera: ${elevFirst.toFixed(0)} m</span>`);
+    if(elevLast!=null) addResult(`\n<span class="r-info">Elevacion desembocadura: ${(elevLast).toFixed(0)} m</span>`);
+    addResult(`\n\n<span class="r-name">Rio principal: ${mainRiver}</span>`);
+
+    if(sortedRios.length>1){addResult(`\n\n<span class="r-label">Afluentes al embalse:</span>`);sortedRios.slice(1).forEach(([n])=>addResult(`\n  - ${n}`));}
+
+    if(trace.names.length){const colorMap=buildTraceColorMap(trace.names);addResult(`\n\n<span class="r-label">Recorrido al mar:</span>`);addResult(`\n  <span style="color:#FF5722;">●</span> ${mainRiver} (aguas abajo embalse)`);trace.names.forEach(n=>addResult(`\n  <span style="color:${colorMap[n]};">●</span> ${n}`));}
+
+    if(arpsiResult.length){const ua=[...new Set(arpsiResult.map(f=>f.properties?.apsf_name).filter(Boolean))];addResult(`\n\n<span class="r-label">ARPSIs aguas abajo (${ua.length}):</span>`);ua.forEach(n=>addResult(`\n  - ${n}`));}
+    else addResult(`\n\n<span class="r-info">No se encontraron ARPSIs aguas abajo.</span>`);
+
+    addResult(`\n\n<span class="r-info" style="font-size:11px;">Verde = aguas arriba / afluentes  |  Rojo = aguas abajo  |  Colores = recorrido al mar  |  Naranja = ARPSIs</span>`);
+    const allBounds = resultLayer.getBounds().extend(extraLayer.getBounds());
+    if(traceLayer)allBounds.extend(traceLayer.getBounds());
+    if(arpsiLayer)allBounds.extend(arpsiLayer.getBounds());
+    map.fitBounds(allBounds.pad(0.1));
 }
 
-// --- Download ---
-function downloadResult() {
-    if (!lastGeoJSON) return;
-    const blob = new Blob([JSON.stringify(lastGeoJSON, null, 2)], { type:"application/geo+json" });
-    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "resultado.geojson"; a.click();
+async function analizarEmbalse() {
+    if (!lastEmbalseFeats || !resultLayer) return;
+    document.getElementById("btn-embalse").disabled = true;
+    document.getElementById("btn-embalse-analisis").disabled = true;
+    addResult(`\n\n<span class="r-label">Analizando cauces y ARPSIs...</span>`);
+    try {
+        await runCauceAnalysis(lastEmbalseFeats);
+    } catch(e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
+    finally { hideProgress(); document.getElementById("btn-embalse").disabled=false; document.getElementById("btn-embalse-analisis").disabled=false; }
 }
-</script>
-</body>
-</html>
+
+async function analizarPresa() {
+    if (!lastGeoJSON || !resultLayer) return;
+    document.getElementById("btn-presa").disabled = true;
+    document.getElementById("btn-presa-analisis").disabled = true;
+
+    addResult(`\n\n<span class="r-label">Buscando embalse asociado...</span>`);
+    showProgress(0, "Buscando embalse asociado...");
+
+    try {
+        const presaCoord = lastGeoJSON.features[0].geometry.coordinates;
+        const presaPt = turf.point(presaCoord);
+
+        let embalseFeats = null;
+        for (const buffer of [0.005, 0.01, 0.02, 0.05]) {
+            showProgress(5, `Buscando embalses (radio ${(buffer*111).toFixed(0)} km)...`);
+         
