@@ -819,4 +819,82 @@ async function analizarPresa() {
         let embalseFeats = null;
         for (const buffer of [0.005, 0.01, 0.02, 0.05]) {
             showProgress(5, `Buscando embalses (radio ${(buffer*111).toFixed(0)} km)...`);
-         
+            const bbox = `${presaCoord[0]-buffer},${presaCoord[1]-buffer},${presaCoord[0]+buffer},${presaCoord[1]+buffer}`;
+            const resp = await fetch(`${OGC_EMBALSES}?f=application%2Fgeo%2Bjson&limit=${PAGE_LIMIT}&sortby=nombre&bbox=${bbox}`);
+            const candidates = resp.ok ? (await resp.json()).features || [] : [];
+            if (!candidates.length) continue;
+
+            const containing = candidates.filter(ef => {
+                try { return turf.booleanPointInPolygon(presaPt, ef); } catch { return false; }
+            });
+            if (containing.length) { embalseFeats = containing; break; }
+
+            let minDist = Infinity, closest = null;
+            for (const ef of candidates) {
+                try { const d = turf.pointToLineDistance(presaPt, turf.polygonToLine(ef), {units:"kilometers"}); if (d < minDist) { minDist = d; closest = ef; } } catch {}
+            }
+            if (closest && minDist < 2) { embalseFeats = [closest]; break; }
+        }
+
+        if (!embalseFeats || !embalseFeats.length) {
+            addResult(`\n\n<span class="r-info">No se encontro embalse asociado a esta presa.</span>`);
+            return;
+        }
+
+        const embName = embalseFeats[0].properties?.nombre || "desconocido";
+        addResult(`\n<span class="r-label">Embalse:</span> ${embName}`);
+
+        resultLayer.addData({ type:"FeatureCollection", features:embalseFeats });
+
+        addResult(`\n\n<span class="r-label">Analizando cauces y ARPSIs...</span>`);
+        await runCauceAnalysis(embalseFeats);
+
+    } catch(e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
+    finally { hideProgress(); document.getElementById("btn-presa").disabled=false; document.getElementById("btn-presa-analisis").disabled=false; }
+}
+
+// --- PRESAS ---
+const getPresaName = setupAutocomplete("inp-presa", "suggestions-presa", OGC_PRESAS, "nombre",
+    p => p.cauce ? `Cauce: ${p.cauce}` : null,
+    name => searchPresa(name)
+);
+
+async function searchPresa(name) {
+    if (!name) name = getPresaName();
+    if (!name) { setResult("Escriba un nombre de presa."); return; }
+    clearMap();
+    document.getElementById("info-banner").style.display = "none";
+    document.getElementById("btn-presa").disabled = true;
+    setResult(`<span class="r-info">Buscando presa "${name}"...</span>`);
+    try {
+        const filter = encodeURIComponent(`nombre = '${name}'`);
+        const resp = await fetch(`${OGC_PRESAS}?f=application%2Fgeo%2Bjson&limit=50&filter=${filter}&filter-lang=cql-text`);
+        if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+        const data = await resp.json();
+        const feats = data.features || [];
+        if (!feats.length) { setResult(`<span class="r-info">No se encontro "${name}".</span>`); return; }
+        lastGeoJSON = { type:"FeatureCollection", features:feats };
+        resultLayer = L.geoJSON(lastGeoJSON, {
+            pointToLayer: (f,ll) => L.circleMarker(ll, { radius:8, fillColor:"#FF9800", color:"#E65100", weight:2, fillOpacity:0.8 }),
+            onEachFeature: (f,ly) => { const p=f.properties||{}; ly.bindPopup(`<b>${p.nombre||"-"}</b><br>Cauce: ${p.cauce||"-"}<br>Tipologia: ${p.tipologia||"-"}<br>Fase: ${p.fase||"-"}<br>Provincia: ${p.provincia||"-"}`); }
+        }).addTo(map);
+        map.fitBounds(resultLayer.getBounds().pad(0.3));
+        document.getElementById("dl-btn").disabled = false;
+        const p = feats[0].properties||{};
+        const cent = getCentroid(lastGeoJSON);
+        const demar = cent ? findDemarcacion(cent[0], cent[1]) : null;
+        document.getElementById("btn-presa-analisis").disabled = false;
+        setResult(`<span class="r-name">${p.nombre||name}</span>\n\n<span class="r-label">Demarcacion:</span> ${demar||"-"}\n<span class="r-label">Cauce:</span> ${p.cauce||"-"}\n<span class="r-label">Tipologia:</span> ${p.tipologia||"-"}\n<span class="r-label">Fase:</span> ${p.fase||"-"}\n<span class="r-label">CCAA:</span> ${p.ccaa||"-"}\n<span class="r-label">Provincia:</span> ${p.provincia||"-"}\n<span class="r-label">Resultados:</span> ${feats.length}`);
+    } catch(e) { setResult(`<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
+    finally { document.getElementById("btn-presa").disabled = false; }
+}
+
+// --- Download ---
+function downloadResult() {
+    if (!lastGeoJSON) return;
+    const blob = new Blob([JSON.stringify(lastGeoJSON, null, 2)], { type:"application/geo+json" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "resultado.geojson"; a.click();
+}
+</script>
+</body>
+</html>
