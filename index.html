@@ -1,0 +1,1333 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#16213e">
+<title>Buscador Hidrologico</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/@turf/turf@7/turf.min.js"></script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { height:100%; overflow:hidden; }
+body { font-family:'Segoe UI',Arial,sans-serif; display:flex; height:100vh; background:#1a1a2e; color:#e0e0e0; }
+
+#sidebar {
+    width:370px; min-width:370px; background:#16213e; display:flex; flex-direction:column;
+    border-right:2px solid #0f3460; overflow:hidden;
+}
+#sidebar-header {
+    padding:10px 14px; display:flex; align-items:center; gap:10px;
+    border-bottom:1px solid #0f3460; background:#FDD835; flex-shrink:0;
+}
+#sidebar-header img { height:40px; }
+#sidebar-header h2 { font-size:13px; color:#1a1a2e; line-height:1.3; margin:0; }
+#sidebar-header small { color:#333; }
+.search-box { padding:14px 16px; flex-shrink:0; }
+.search-box label { display:block; font-size:12px; color:#8892b0; margin-bottom:4px; }
+.tab-bar { display:flex; border-bottom:1px solid #0f3460; flex-shrink:0; }
+.tab-btn {
+    flex:1; padding:10px 4px; text-align:center; cursor:pointer; background:#1a1a2e;
+    color:#8892b0; border:none; font-size:12px; transition:all .2s;
+}
+.tab-btn.active { background:#0f3460; color:#64B5F6; font-weight:600; }
+.tab-content { display:none; padding:14px 16px; flex-shrink:0; }
+.tab-content.active { display:block; }
+
+.autocomplete-wrapper { position:relative; }
+#inp-rio, #inp-embalse, #inp-presa {
+    width:100%; padding:10px 12px; border:1px solid #0f3460; border-radius:5px;
+    background:#1a1a2e; color:#e0e0e0; font-size:14px;
+}
+#inp-rio:focus { outline:none; border-color:#00d4ff; }
+.suggestions-list {
+    position:absolute; left:0; right:0; top:100%; z-index:10;
+    background:#1a1a2e; border:1px solid #0f3460; border-top:none;
+    max-height:300px; overflow-y:auto; border-radius:0 0 5px 5px; display:none;
+}
+.suggestions-list div {
+    padding:9px 12px; font-size:13px; cursor:pointer; border-bottom:1px solid #0f3460;
+}
+.suggestions-list div:hover { background:#0f3460; color:#00d4ff; }
+.suggestions-list div small { color:#8892b0; font-size:11px; display:block; margin-top:2px; }
+
+button.action {
+    width:100%; padding:10px; margin-top:10px; border:none; border-radius:5px;
+    background:linear-gradient(135deg,#0f3460,#1565C0); color:#fff;
+    font-size:13px; font-weight:600; cursor:pointer;
+}
+button.action:disabled { opacity:.4; cursor:not-allowed; }
+#result-panel { flex:1; display:flex; flex-direction:column; overflow:hidden; border-top:1px solid #0f3460; min-height:0; }
+#result-panel h3 { padding:10px 16px 4px; font-size:11px; color:#64B5F6; text-transform:uppercase; letter-spacing:.5px; flex-shrink:0; }
+#result-box {
+    margin:0 16px 10px; padding:10px; border-radius:5px; font-size:12px;
+    background:#1a1a2e; border:1px solid #0f3460; flex:1; overflow-y:auto;
+    white-space:pre-wrap; line-height:1.6; min-height:0;
+}
+.r-name { color:#64B5F6; font-weight:700; font-size:14px; }
+.r-info { color:#8892b0; }
+.r-label { color:#00d4ff; }
+
+.download-bar { padding:8px 16px; display:flex; gap:8px; border-top:1px solid #0f3460; flex-shrink:0; }
+.dl-btn {
+    flex:1; padding:7px; border:1px solid #0f3460; border-radius:4px; background:transparent;
+    color:#64B5F6; font-size:11px; cursor:pointer;
+}
+.dl-btn:disabled { opacity:.3; cursor:not-allowed; }
+
+#map { flex:1; }
+.saih-label{background:rgba(22,33,62,.85)!important;border:1px solid #0f3460!important;color:#e0e0e0!important;font-size:10px!important;font-weight:600!important;padding:2px 6px!important;border-radius:4px!important;box-shadow:0 1px 3px rgba(0,0,0,.3)!important}
+.saih-label::before{border-right-color:rgba(22,33,62,.85)!important}
+
+.info-banner {
+    position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:1000;
+    background:rgba(22,33,62,.9); color:#64B5F6; padding:6px 14px; border-radius:4px;
+    font-size:12px; pointer-events:none;
+}
+
+#progress-bar {
+    display:none; margin:4px 16px 6px; height:22px; background:#1a1a2e; border:1px solid #0f3460;
+    border-radius:4px; position:relative; overflow:hidden; flex-shrink:0;
+}
+#progress-bar > div {
+    height:100%; background:linear-gradient(90deg,#0f3460,#1565C0); transition:width .3s;
+    border-radius:3px;
+}
+#progress-bar > span {
+    position:absolute; top:0; left:8px; right:8px; line-height:22px;
+    font-size:11px; color:#e0e0e0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+
+@media (max-width: 768px) {
+    body { flex-direction:column; }
+    #sidebar {
+        width:100%; min-width:unset; order:2;
+        height:55vh; min-height:240px;
+        border-right:none; border-top:2px solid #0f3460;
+        overflow-y:auto;
+    }
+    #map { order:1; flex:1; width:100%; min-height:120px; }
+    #sidebar-header img { height:28px; }
+    #sidebar-header h2 { font-size:10px; }
+    #sidebar-header { padding:6px 10px; gap:8px; }
+    .tab-btn { font-size:10px; padding:7px 2px; }
+    .tab-content { padding:8px 10px; }
+    #result-panel h3 { padding:6px 10px 2px; font-size:10px; }
+    #result-box { font-size:11px; margin:0 10px 6px; padding:8px; }
+    .download-bar { padding:5px 10px; }
+    .dl-btn { font-size:10px; padding:6px; }
+    .info-banner { font-size:11px; top:6px; }
+}
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+    <div id="sidebar-header">
+        <img src="https://www.miteco.gob.es/content/experience-fragments/miteco/language-masters/es/site/header/master-es/_jcr_content/root/header_container/logoImage.coreimg.svg/1764659487766/header-logo.svg" alt="MITECO">
+        <h2>Buscador Hidrologico<br><small>Rios, embalses y presas de Espana</small></h2>
+    </div>
+
+    <div class="tab-bar">
+        <button class="tab-btn active" onclick="switchTab('rios')">Rios</button>
+        <button class="tab-btn" onclick="switchTab('embalses')">Embalses</button>
+        <button class="tab-btn" onclick="switchTab('presas')">Presas</button>
+    </div>
+
+    <div id="tab-rios" class="tab-content active">
+        <label>Nombre del rio o cauce</label>
+        <div class="autocomplete-wrapper">
+            <input id="inp-rio" type="text" placeholder="Ej: Guadalquivir, Ebro, Tajo..." autocomplete="off">
+            <div id="suggestions-rio" class="suggestions-list"></div>
+        </div>
+        <button class="action" id="btn-rio" onclick="searchRiver()">Buscar</button>
+        <button class="action" id="btn-trazar" onclick="trazarAlMar()" disabled style="margin-top:6px;background:linear-gradient(135deg,#1B5E20,#4CAF50);">Trazar recorrido al mar</button>
+        <button class="action" id="btn-aforo-rio" onclick="buscarAforos('rio')" disabled style="margin-top:6px;background:linear-gradient(135deg,#0D47A1,#2196F3);">Consulta estaciones SAIH</button>
+    </div>
+
+    <div id="tab-embalses" class="tab-content">
+        <label>Nombre del embalse</label>
+        <div class="autocomplete-wrapper">
+            <input id="inp-embalse" type="text" placeholder="Ej: Cornalbo, Buendia..." autocomplete="off">
+            <div id="suggestions-embalse" class="suggestions-list"></div>
+        </div>
+        <button class="action" id="btn-embalse" onclick="searchEmbalse()">Buscar</button>
+        <button class="action" id="btn-aforo-embalse" onclick="buscarDatosEmbalse()" disabled style="margin-top:6px;background:linear-gradient(135deg,#0D47A1,#2196F3);">Datos del embalse</button>
+        <button class="action" id="btn-embalse-analisis" onclick="analizarEmbalse()" disabled style="margin-top:6px;background:linear-gradient(135deg,#1B5E20,#4CAF50);">Analizar cauces y ARPSIs</button>
+        <button class="action" id="btn-saih-arriba" onclick="buscarSaihAguasArriba()" disabled style="margin-top:6px;background:linear-gradient(135deg,#00695C,#009688);">Estaciones SAIH aguas arriba</button>
+        <button class="action" id="btn-saih-abajo" onclick="buscarSaihAguasAbajo()" disabled style="margin-top:6px;background:linear-gradient(135deg,#4A148C,#7B1FA2);">Estaciones SAIH aguas abajo</button>
+    </div>
+
+    <div id="tab-presas" class="tab-content">
+        <label>Nombre de la presa</label>
+        <div class="autocomplete-wrapper">
+            <input id="inp-presa" type="text" placeholder="Ej: Aldeadavila, Alcantara..." autocomplete="off">
+            <div id="suggestions-presa" class="suggestions-list"></div>
+        </div>
+        <button class="action" id="btn-presa" onclick="searchPresa()">Buscar</button>
+        <button class="action" id="btn-aforo-presa" onclick="buscarDatosEmbalse()" disabled style="margin-top:6px;background:linear-gradient(135deg,#0D47A1,#2196F3);">Datos del embalse</button>
+        <button class="action" id="btn-presa-analisis" onclick="analizarPresa()" disabled style="margin-top:6px;background:linear-gradient(135deg,#1B5E20,#4CAF50);">Analizar cauces y ARPSIs</button>
+        <button class="action" id="btn-saih-arriba-presa" onclick="buscarSaihAguasArriba()" disabled style="margin-top:6px;background:linear-gradient(135deg,#00695C,#009688);">Estaciones SAIH aguas arriba</button>
+        <button class="action" id="btn-saih-abajo-presa" onclick="buscarSaihAguasAbajo()" disabled style="margin-top:6px;background:linear-gradient(135deg,#4A148C,#7B1FA2);">Estaciones SAIH aguas abajo</button>
+    </div>
+
+    <div id="result-panel">
+        <h3>Resultado</h3>
+        <div id="progress-bar"><div></div><span></span></div>
+        <div id="result-box"><span class="r-info">Seleccione una opcion y busque.</span></div>
+    </div>
+
+    <div class="download-bar">
+        <button class="dl-btn" id="dl-btn" disabled onclick="downloadResult()">Descargar GeoJSON</button>
+    </div>
+</div>
+
+<div id="map">
+    <div class="info-banner" id="info-banner">Busque rios, embalses o presas en el panel</div>
+</div>
+
+<script>
+if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+}
+
+const OGC_RIOS = "https://wmts.mapama.gob.es/sig-api/ogc/features/v1/collections/agua:rios_comp_pfaf1/items";
+const OGC_ARPSI = "https://wmts.mapama.gob.es/sig-api/ogc/features/v1/collections/agua:Zi_arpsi/items";
+const OGC_EMBALSES = "https://wmts.mapama.gob.es/sig-api/ogc/features/v1/collections/agua:eGISPE_Embalses/items";
+const OGC_PRESAS = "https://wmts.mapama.gob.es/sig-api/ogc/features/v1/collections/agua:eGISPE_Infraestructuras/items";
+const OGC_SUBTRAMOS = "https://wmts.mapama.gob.es/sig-api/ogc/features/v1/collections/agua:rios_pfaf_cx1/items";
+const PAGE_LIMIT = 1000;
+
+const ARGOS_ACCOUNT = "5c25665f-a57a-44d3-9658-9d6b2afe09d6";
+const ARGOS_PF = "01928f80-65ec-75e6-bddc-6daa2b7c51f1";
+const ARGOS_PL = "01928f80-65ec-7479-95cb-288f07921f44";
+const ARGOS_PV = "01928f80-65ec-7a82-bde9-285b85560650";
+const ARGOS_PLV = "01928f80-65ec-71a3-8a29-fd2a2c2aa9b0";
+const ARGOS_PO = "0192af9b-459c-7d7b-b604-7ae1a65872c3";
+
+// --- Map ---
+const map = L.map("map").setView([39.5, -3.0], 5);
+const pnoa = L.tileLayer("https://www.ign.es/wmts/pnoa-ma?layer=OI.OrthoimageCoverage&style=default&tilematrixset=GoogleMapsCompatible&Service=WMTS&Request=GetTile&Version=1.0.0&format=image/jpeg&TileMatrix={z}&TileRow={y}&TileCol={x}", { attribution:"PNOA &copy; IGN", maxZoom:19 });
+const ignBase = L.tileLayer.wms("https://www.ign.es/wms-inspire/ign-base?", { layers:"IGNBaseTodo", format:"image/png", transparent:false, attribution:"&copy; IGN" });
+const osm = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution:"&copy; OSM" });
+const redHidro = L.tileLayer.wms("https://servicios.idee.es/wms-inspire/hidrografia?", { layers:"HY.Network", format:"image/png", transparent:true, attribution:"&copy; IGN", opacity:0.25 });
+pnoa.addTo(map);
+redHidro.addTo(map);
+L.control.layers({"PNOA":pnoa,"IGN Base":ignBase,"OpenStreetMap":osm},{"Red hidrografica":redHidro}).addTo(map);
+
+map.on("zoomend", () => {
+    const op = map.getZoom() >= 13 ? 0.65 : 1;
+    [pnoa, ignBase, osm].forEach(l => { if (map.hasLayer(l)) l.setOpacity(op); });
+});
+
+// --- Demarcaciones (load once) ---
+const OGC_DEMAR = "https://wmts.mapama.gob.es/sig-api/ogc/features/v1/collections/agua:Demarcaciones_ET/items";
+let demarcacionesGeoJSON = null;
+async function loadDemarcaciones() {
+    try {
+        const resp = await fetch(`${OGC_DEMAR}?f=application%2Fgeo%2Bjson&limit=50`);
+        if (resp.ok) demarcacionesGeoJSON = await resp.json();
+    } catch {}
+}
+loadDemarcaciones();
+
+function findDemarcacion(lon, lat) {
+    if (!demarcacionesGeoJSON) return null;
+    const pt = turf.point([lon, lat]);
+    for (const f of demarcacionesGeoJSON.features) {
+        try { if (turf.booleanPointInPolygon(pt, f)) return f.properties.nom_demar; } catch {}
+    }
+    return null;
+}
+
+function getCentroid(geojson) {
+    try {
+        const c = turf.centroid(geojson);
+        return c.geometry.coordinates;
+    } catch { return null; }
+}
+
+function getMidpoint(lineFeature) {
+    try {
+        const len = turf.length(lineFeature, {units:"kilometers"});
+        const mid = turf.along(lineFeature, len / 2, {units:"kilometers"});
+        return mid.geometry.coordinates;
+    } catch { return null; }
+}
+
+// --- Elevation query via WMTS GetFeatureInfo ---
+const MDT_WMTS = "https://servicios.idee.es/wmts/mdt";
+const ELEV_ZOOM = 14;
+
+function lonLatToTilePixel(lon, lat, z) {
+    const n = Math.pow(2, z);
+    const tileX = Math.floor((lon + 180) / 360 * n);
+    const latRad = lat * Math.PI / 180;
+    const tileY = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n);
+    const pixelX = Math.floor(((lon + 180) / 360 * n - tileX) * 256);
+    const pixelY = Math.floor(((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n - tileY) * 256);
+    return { tileX, tileY, pixelX: Math.min(pixelX, 255), pixelY: Math.min(pixelY, 255) };
+}
+
+async function getElevation(lon, lat) {
+    try {
+        const { tileX, tileY, pixelX, pixelY } = lonLatToTilePixel(lon, lat, ELEV_ZOOM);
+        const url = `${MDT_WMTS}?service=WMTS&version=1.0.0&request=GetFeatureInfo&layer=EL.ElevationGridCoverage&style=default&InfoFormat=text/plain&TileMatrixSet=GoogleMapsCompatible&TileMatrix=${ELEV_ZOOM}&TileRow=${tileY}&TileCol=${tileX}&I=${pixelX}&J=${pixelY}`;
+        const resp = await fetch(url);
+        if (!resp.ok) return null;
+        const text = await resp.text();
+        const match = text.match(/GRAY_INDEX\s*=\s*([\d.+-]+)/);
+        if (!match) return null;
+        const val = parseFloat(match[1]);
+        if (isNaN(val) || val < -500 || val > 9000) return null;
+        return val;
+    } catch { return null; }
+}
+
+// --- State ---
+let resultLayer = null;
+let arpsiLayer = null;
+let extraLayer = null;
+let traceLayer = null;
+let lastDownstreamFeats = null;
+let lastUpstreamFeats = null;
+let lastGeoJSON = null;
+let lastRiverCodPfaf = null;
+function setResult(h) { document.getElementById("result-box").innerHTML = h; }
+function addResult(h) { document.getElementById("result-box").innerHTML += h; }
+function showProgress(pct, label) {
+    const bar = document.getElementById("progress-bar");
+    bar.style.display = "block";
+    bar.querySelector("div").style.width = Math.min(pct, 100) + "%";
+    bar.querySelector("span").textContent = label;
+}
+function hideProgress() { document.getElementById("progress-bar").style.display = "none"; }
+function clearMap() {
+    if (resultLayer) { map.removeLayer(resultLayer); resultLayer = null; }
+    if (arpsiLayer) { map.removeLayer(arpsiLayer); arpsiLayer = null; }
+    if (extraLayer) { map.removeLayer(extraLayer); extraLayer = null; }
+    if (traceLayer) { map.removeLayer(traceLayer); traceLayer = null; }
+    lastRiverCodPfaf = null;
+    document.getElementById("btn-trazar").disabled = true;
+    document.getElementById("btn-aforo-rio").disabled = true;
+    document.getElementById("btn-aforo-embalse").disabled = true;
+    document.getElementById("btn-aforo-presa").disabled = true;
+    document.getElementById("btn-saih-abajo").disabled = true;
+    document.getElementById("btn-saih-arriba").disabled = true;
+    document.getElementById("btn-saih-abajo-presa").disabled = true;
+    document.getElementById("btn-saih-arriba-presa").disabled = true;
+    lastDownstreamFeats = null;
+    lastUpstreamFeats = null;
+    document.getElementById("btn-presa-analisis").disabled = true;
+    lastGeoJSON = null;
+    document.getElementById("dl-btn").disabled = true;
+}
+
+// --- Tabs ---
+const TAB_IDS = ["rios","embalses","presas"];
+function switchTab(id) {
+    document.querySelectorAll(".tab-btn").forEach((b,i) => b.classList.toggle("active", TAB_IDS[i]===id));
+    TAB_IDS.forEach(t => document.getElementById("tab-"+t).classList.toggle("active", t===id));
+}
+
+// --- Generic autocomplete setup ---
+function setupAutocomplete(inputId, sugId, apiUrl, nameField, subtitleFn, onSelect, extraParams) {
+    let debounce = null, selected = null;
+    const inp = document.getElementById(inputId);
+    const sug = document.getElementById(sugId);
+    const extra = extraParams || "";
+
+    inp.addEventListener("input", function() {
+        clearTimeout(debounce); selected = null;
+        const q = this.value.trim().toUpperCase();
+        if (q.length < 3) { sug.style.display = "none"; return; }
+        debounce = setTimeout(async () => {
+            try {
+                const filter = encodeURIComponent(`${nameField} LIKE '%${q}%'`);
+                const url = `${apiUrl}?f=application%2Fgeo%2Bjson&limit=200&filter=${filter}&filter-lang=cql-text${extra}`;
+                const resp = await fetch(url);
+                if (!resp.ok) { sug.style.display = "none"; return; }
+                const data = await resp.json();
+                const items = new Map();
+                (data.features || []).forEach(f => {
+                    const n = f.properties?.[nameField];
+                    if (n && !items.has(n)) items.set(n, f.properties);
+                });
+                if (!items.size) { sug.style.display = "none"; return; }
+                sug.innerHTML = "";
+                for (const [name, props] of [...items.entries()].sort((a,b) => a[0].localeCompare(b[0]))) {
+                    const div = document.createElement("div");
+                    const sub = subtitleFn(props);
+                    div.innerHTML = name + (sub ? `<small>${sub}</small>` : "");
+                    div.addEventListener("click", () => { inp.value = name; selected = name; sug.style.display = "none"; onSelect(name); });
+                    sug.appendChild(div);
+                }
+                sug.style.display = "block";
+            } catch { sug.style.display = "none"; }
+        }, 350);
+    });
+    inp.addEventListener("keydown", e => { if (e.key === "Enter") { sug.style.display = "none"; onSelect(selected || inp.value.trim().toUpperCase()); }});
+    document.addEventListener("click", e => { if (!e.target.closest(".autocomplete-wrapper")) sug.style.display = "none"; });
+    return () => selected || inp.value.trim().toUpperCase();
+}
+
+// --- RIOS ---
+const getRioName = setupAutocomplete("inp-rio", "suggestions-rio", OGC_RIOS, "nom_rio",
+    p => p.long_rio_m ? `${(p.long_rio_m/1000).toFixed(1)} km` : null,
+    name => searchRiver(name)
+);
+
+async function fetchBbox(apiUrl, bboxStr, limit) {
+    let all = [], si = 0;
+    while (true) {
+        const resp = await fetch(`${apiUrl}?f=application%2Fgeo%2Bjson&limit=${limit||PAGE_LIMIT}&startIndex=${si}&bbox=${bboxStr}`);
+        if (!resp.ok) break;
+        const d = await resp.json(), feats = d.features || [];
+        all = all.concat(feats);
+        if (feats.length < (limit||PAGE_LIMIT)) break;
+        si += feats.length;
+    }
+    return all;
+}
+
+async function searchRiver(name) {
+    if (!name) name = getRioName();
+    if (!name) { setResult("Escriba un nombre de rio."); return; }
+    clearMap();
+    document.getElementById("info-banner").style.display = "none";
+    document.getElementById("btn-rio").disabled = true;
+    setResult(`<span class="r-info">Buscando "${name}"...</span>`);
+    try {
+        let all = [], si = 0;
+        const filter = encodeURIComponent(`nom_rio = '${name}'`);
+        while (true) {
+            const resp = await fetch(`${OGC_RIOS}?f=application%2Fgeo%2Bjson&limit=${PAGE_LIMIT}&startIndex=${si}&filter=${filter}&filter-lang=cql-text`);
+            if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+            const d = await resp.json(), feats = d.features || [];
+            all = all.concat(feats);
+            if (feats.length < PAGE_LIMIT) break;
+            si += feats.length;
+        }
+        if (!all.length) { setResult(`<span class="r-info">No se encontro "${name}".</span>`); return; }
+        lastGeoJSON = { type:"FeatureCollection", features:all };
+        resultLayer = L.geoJSON(lastGeoJSON, {
+            style: () => ({ color:"#00BCD4", weight:3.5, opacity:0.9 }),
+            onEachFeature: (f,ly) => { const p=f.properties||{}; ly.bindPopup(`<b>${p.nom_rio||"-"}</b><br>Pfafstetter: ${p.cod_pfafrio||"-"}<br>Longitud: ${p.long_rio_m?(p.long_rio_m/1000).toFixed(1)+" km":"-"}`); }
+        }).addTo(map);
+        map.fitBounds(resultLayer.getBounds().pad(0.1));
+        document.getElementById("dl-btn").disabled = false;
+        const p = all[0].properties||{};
+        const cent = getCentroid(lastGeoJSON);
+        const demar = cent ? findDemarcacion(cent[0], cent[1]) : null;
+        lastRiverCodPfaf = p.cod_pfafrio || null;
+        if (lastRiverCodPfaf) { document.getElementById("btn-trazar").disabled = false; document.getElementById("btn-aforo-rio").disabled = false; }
+        setResult(`<span class="r-name">${p.nom_rio||name}</span>\n\n<span class="r-label">Longitud:</span> ${p.long_rio_m?(p.long_rio_m/1000).toFixed(1):"-"} km\n<span class="r-label">Pfafstetter:</span> ${p.cod_pfafrio||"-"}\n<span class="r-label">Demarcacion:</span> ${demar||"-"}\n<span class="r-label">Segmentos:</span> ${all.length}`);
+
+        const bb = resultLayer.getBounds();
+        const bboxStr = `${bb.getWest()},${bb.getSouth()},${bb.getEast()},${bb.getNorth()}`;
+
+        addResult(`\n\n<span class="r-info">Consultando ARPSIs...</span>`);
+
+        const arpsiFeats = await fetchBbox(OGC_ARPSI, bboxStr, PAGE_LIMIT);
+
+        const riverFC = turf.featureCollection(all);
+        const intersecting = arpsiFeats.filter(af => {
+            try {
+                for (const rf of all) {
+                    if (turf.booleanIntersects(af, rf)) return true;
+                }
+                return false;
+            } catch { return false; }
+        });
+
+        if (intersecting.length) {
+            arpsiLayer = L.geoJSON({ type:"FeatureCollection", features:intersecting }, {
+                style: () => ({ color:"#FF9800", weight:2.5, opacity:0.8, dashArray:"6 4", fillOpacity:0 }),
+                onEachFeature: (f,ly) => { const p=f.properties||{}; ly.bindPopup(`<b>ARPSI: ${p.apsf_name||"-"}</b><br>Codigo: ${p.apsfr_code||"-"}<br>Demarcacion: ${p.demarcacion||"-"}`); }
+            }).addTo(map);
+            const uniqueArpsi = [...new Set(intersecting.map(f => f.properties?.apsf_name).filter(Boolean))];
+            addResult(`\n\n<span class="r-label">ARPSIs asociadas (${uniqueArpsi.length}):</span>`);
+            uniqueArpsi.forEach(n => addResult(`\n  - ${n}`));
+        } else {
+            addResult(`\n\n<span class="r-info">No se encontraron ARPSIs asociadas al rio.</span>`);
+        }
+
+    } catch(e) { setResult(`<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
+    finally { document.getElementById("btn-rio").disabled = false; }
+}
+
+// --- EMBALSES ---
+const getEmbalseName = setupAutocomplete("inp-embalse", "suggestions-embalse", OGC_EMBALSES, "nombre",
+    p => null,
+    name => searchEmbalse(name),
+    "&sortby=nombre"
+);
+
+// --- Helper: fetch a complete river by Pfafstetter code ---
+async function fetchRiverByCode(code) {
+    const filter = encodeURIComponent(`cod_pfafrio = '${code}'`);
+    const resp = await fetch(`${OGC_RIOS}?f=application%2Fgeo%2Bjson&limit=1&filter=${filter}&filter-lang=cql-text`);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data.features?.[0] || null;
+}
+
+function flatCoords(geom) {
+    if (geom.type === "LineString") return geom.coordinates;
+    const segs = geom.coordinates.map(c => c.slice());
+    if (segs.length <= 1) return segs[0] || [];
+    const chain = [segs.splice(0, 1)[0]];
+    while (segs.length) {
+        const head = chain[0][0];
+        const tail = chain[chain.length - 1];
+        const tp = tail[tail.length - 1];
+        let bI = 0, bD = Infinity, bH = "";
+        const d2 = (a, b) => (a[0]-b[0])**2 + (a[1]-b[1])**2;
+        for (let i = 0; i < segs.length; i++) {
+            const s = segs[i], sf = s[0], sl = s[s.length - 1];
+            const pairs = [[d2(tp,sf),"a"],[d2(tp,sl),"ar"],[d2(head,sl),"p"],[d2(head,sf),"pr"]];
+            for (const [dist, how] of pairs) { if (dist < bD) { bD = dist; bI = i; bH = how; } }
+        }
+        const seg = segs.splice(bI, 1)[0];
+        if (bH === "a") chain.push(seg);
+        else if (bH === "ar") { seg.reverse(); chain.push(seg); }
+        else if (bH === "p") chain.unshift(seg);
+        else { seg.reverse(); chain.unshift(seg); }
+    }
+    const result = chain[0].slice();
+    for (let i = 1; i < chain.length; i++) {
+        const prev = result[result.length - 1], next = chain[i];
+        const skip = (prev[0] === next[0][0] && prev[1] === next[0][1]) ? 1 : 0;
+        for (let j = skip; j < next.length; j++) result.push(next[j]);
+    }
+    return result;
+}
+
+// --- Shared: trace downstream to sea using complete river geometries ---
+async function traceToSea(startCode, onProgress) {
+    const allTraceFeats = [];
+    const traceNames = [];
+    const maxSteps = startCode.length;
+    let step = 0;
+
+    if (onProgress) onProgress(step, maxSteps, "Obteniendo rio inicial...");
+    const startFeat = await fetchRiverByCode(startCode);
+    if (!startFeat) return { features: [], names: [] };
+
+    const sc = flatCoords(startFeat.geometry);
+    step++;
+    if (onProgress) onProgress(step, maxSteps, "Calculando elevaciones...");
+    const eF = await getElevation(sc[0][0], sc[0][1]);
+    const eL = await getElevation(sc[sc.length - 1][0], sc[sc.length - 1][1]);
+    let confluencePt = (eF != null && eL != null) ? (eF <= eL ? sc[0] : sc[sc.length - 1])
+        : sc[sc.length - 1];
+
+    let currentCode = startCode;
+
+    while (currentCode.length > 1) {
+        let parentCode = null, parentFeat = null;
+        for (let len = currentCode.length - 1; len >= 1; len--) {
+            const candidate = currentCode.substring(0, len);
+            if (onProgress) onProgress(step, maxSteps, `Buscando rio padre (${candidate})...`);
+            const feat = await fetchRiverByCode(candidate);
+            if (feat) { parentCode = candidate; parentFeat = feat; break; }
+        }
+        if (!parentCode || !parentFeat) break;
+
+        const parentName = parentFeat.properties?.nom_rio || parentCode;
+        step++;
+        if (onProgress) onProgress(step, maxSteps, `Trazando: ${parentName}...`);
+        const pc = flatCoords(parentFeat.geometry);
+        const epF = await getElevation(pc[0][0], pc[0][1]);
+        const epL = await getElevation(pc[pc.length - 1][0], pc[pc.length - 1][1]);
+        const desembIdx = (epF != null && epL != null)
+            ? (epF >= epL ? pc.length - 1 : 0)
+            : pc.length - 1;
+
+        let minDist = Infinity, cutIdx = 0;
+        for (let i = 0; i < pc.length; i++) {
+            const dx = pc[i][0] - confluencePt[0], dy = pc[i][1] - confluencePt[1];
+            const d = dx * dx + dy * dy;
+            if (d < minDist) { minDist = d; cutIdx = i; }
+        }
+
+        const trimmed = desembIdx === pc.length - 1
+            ? pc.slice(cutIdx) : pc.slice(0, cutIdx + 1);
+
+        if (trimmed.length >= 2) {
+            allTraceFeats.push({
+                type: "Feature",
+                geometry: { type: "LineString", coordinates: trimmed },
+                properties: { nom_rio: parentName, cod_pfafrio: parentCode,
+                    _traceRiver: parentName, _elev: desembIdx === pc.length - 1 ? epL : epF }
+            });
+            traceNames.push(parentName);
+        }
+
+        confluencePt = pc[desembIdx];
+        currentCode = parentCode;
+    }
+
+    return { features: allTraceFeats, names: traceNames };
+}
+
+// --- Shared: find ARPSIs intersecting a set of features ---
+async function findArpsis(segFeats) {
+    if (!segFeats.length) return [];
+    const bounds = L.geoJSON({type:"FeatureCollection",features:segFeats}).getBounds();
+    const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
+    const candidates = await fetchBbox(OGC_ARPSI, bbox, PAGE_LIMIT);
+    return candidates.filter(af => {
+        try { for (const sf of segFeats) { if (turf.booleanIntersects(af, sf)) return true; } return false; } catch { return false; }
+    });
+}
+
+const TRACE_COLORS = ["#E91E63","#9C27B0","#3F51B5","#009688","#FF5722","#795548"];
+function buildTraceColorMap(names) {
+    const m = {}; names.forEach((n,i) => { m[n] = TRACE_COLORS[i % TRACE_COLORS.length]; }); return m;
+}
+
+// --- TRACE TO SEA (from river search) ---
+async function trazarAlMar() {
+    if (!lastRiverCodPfaf || !lastGeoJSON) return;
+    if (traceLayer) { map.removeLayer(traceLayer); traceLayer = null; }
+    if (arpsiLayer) { map.removeLayer(arpsiLayer); arpsiLayer = null; }
+    document.getElementById("btn-trazar").disabled = true;
+    document.getElementById("btn-rio").disabled = true;
+
+    addResult(`\n\n<span class="r-label">Trazando recorrido al mar...</span>`);
+    showProgress(0, "Iniciando trazado al mar...");
+
+    try {
+        const trace = await traceToSea(lastRiverCodPfaf, (step, max, label) => {
+            showProgress((step / (max + 1)) * 90, label);
+        });
+
+        lastDownstreamFeats = lastGeoJSON.features.concat(trace.features);
+
+        if (trace.features.length) {
+            const colorMap = buildTraceColorMap(trace.names);
+            traceLayer = L.geoJSON({type:"FeatureCollection",features:trace.features}, {
+                style: f => ({color:colorMap[f.properties?._traceRiver]||"#E91E63",weight:3.5,opacity:0.85}),
+                onEachFeature: (f,ly) => { const rp=f.properties||{}; ly.bindPopup(`<b>${rp.nom_rio||"-"}</b><br>Elevacion: ${rp._elev!=null?rp._elev.toFixed(0)+" m":"-"}`); }
+            }).addTo(map);
+
+            showProgress(92, "Buscando ARPSIs...");
+            const allDownstream = lastGeoJSON.features.concat(trace.features);
+            const arpsiHits = await findArpsis(allDownstream);
+            if (arpsiHits.length) {
+                arpsiLayer = L.geoJSON({type:"FeatureCollection",features:arpsiHits}, {
+                    style: () => ({color:"#FF9800",weight:2.5,opacity:0.8,dashArray:"6 4",fillOpacity:0}),
+                    onEachFeature: (f,ly) => { const ap=f.properties||{}; ly.bindPopup(`<b>ARPSI: ${ap.apsf_name||"-"}</b><br>Codigo: ${ap.apsfr_code||"-"}`); }
+                }).addTo(map);
+            }
+
+            showProgress(100, "Completado");
+            const allBounds = resultLayer.getBounds().extend(traceLayer.getBounds());
+            if (arpsiLayer) allBounds.extend(arpsiLayer.getBounds());
+            map.fitBounds(allBounds.pad(0.1));
+
+            addResult(`\n\n<span class="r-label">Recorrido al mar:</span>`);
+            trace.names.forEach(n => addResult(`\n  <span style="color:${colorMap[n]};">●</span> ${n}`));
+
+            if (arpsiHits.length) {
+                const uniArpsi = [...new Set(arpsiHits.map(f => f.properties?.apsf_name).filter(Boolean))];
+                addResult(`\n\n<span class="r-label">ARPSIs en el recorrido (${uniArpsi.length}):</span>`);
+                uniArpsi.forEach(n => addResult(`\n  - ${n}`));
+            }
+        } else {
+            addResult(`\n\n<span class="r-info">Este rio desemboca directamente al mar.</span>`);
+        }
+
+    } catch(e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
+    finally { hideProgress(); document.getElementById("btn-trazar").disabled=false; document.getElementById("btn-rio").disabled=false; }
+}
+
+let lastEmbalseFeats = null;
+
+async function searchEmbalse(name) {
+    if (!name) name = getEmbalseName();
+    if (!name) { setResult("Escriba un nombre de embalse."); return; }
+    clearMap();
+    lastEmbalseFeats = null;
+    document.getElementById("btn-embalse-analisis").disabled = true;
+    document.getElementById("info-banner").style.display = "none";
+    document.getElementById("btn-embalse").disabled = true;
+    setResult(`<span class="r-info">Buscando embalse "${name}"...</span>`);
+    try {
+        const filter = encodeURIComponent(`nombre = '${name}'`);
+        const resp = await fetch(`${OGC_EMBALSES}?f=application%2Fgeo%2Bjson&limit=50&sortby=nombre&filter=${filter}&filter-lang=cql-text`);
+        if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+        const data = await resp.json();
+        const feats = data.features || [];
+        if (!feats.length) { setResult(`<span class="r-info">No se encontro "${name}".</span>`); return; }
+        lastGeoJSON = { type:"FeatureCollection", features:feats };
+        lastEmbalseFeats = feats;
+        resultLayer = L.geoJSON(lastGeoJSON, {
+            style: () => ({ color:"#0D47A1", weight:2, fillColor:"#2196F3", fillOpacity:0.4 }),
+            onEachFeature: (f,ly) => { const p=f.properties||{}; ly.bindPopup(`<b>${p.nombre||"-"}</b><br>Codigo: ${p.cod_embalse||"-"}`); }
+        }).addTo(map);
+        map.fitBounds(resultLayer.getBounds().pad(0.3));
+        document.getElementById("dl-btn").disabled = false;
+        document.getElementById("btn-embalse-analisis").disabled = false;
+        document.getElementById("btn-aforo-embalse").disabled = false;
+        const p = feats[0].properties||{};
+        const cent = getCentroid({ type:"FeatureCollection", features:[feats[0]] });
+        const demar = cent ? findDemarcacion(cent[0], cent[1]) : null;
+        setResult(`<span class="r-name">${p.nombre||name}</span>\n\n<span class="r-label">Demarcacion:</span> ${demar||"-"}\n<span class="r-label">Codigo:</span> ${p.cod_embalse||"-"}`);
+    } catch(e) { setResult(`<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
+    finally { document.getElementById("btn-embalse").disabled = false; }
+}
+
+// --- Shared: analyse rivers upstream/downstream of an embalse polygon ---
+async function runCauceAnalysis(embalseFeats) {
+    if (extraLayer) { map.removeLayer(extraLayer); extraLayer = null; }
+    if (traceLayer) { map.removeLayer(traceLayer); traceLayer = null; }
+    if (arpsiLayer) { map.removeLayer(arpsiLayer); arpsiLayer = null; }
+
+    showProgress(0, "Buscando rios cercanos...");
+    const feats = embalseFeats;
+    const embCent = getCentroid({ type:"FeatureCollection", features:[feats[0]] });
+    const SEARCH_BUFFER = 0.02;
+    const searchBbox = embCent
+        ? `${embCent[0]-SEARCH_BUFFER},${embCent[1]-SEARCH_BUFFER},${embCent[0]+SEARCH_BUFFER},${embCent[1]+SEARCH_BUFFER}`
+        : `${resultLayer.getBounds().getWest()-SEARCH_BUFFER},${resultLayer.getBounds().getSouth()-SEARCH_BUFFER},${resultLayer.getBounds().getEast()+SEARCH_BUFFER},${resultLayer.getBounds().getNorth()+SEARCH_BUFFER}`;
+    const rioFeats = await fetchBbox(OGC_RIOS, searchBbox, PAGE_LIMIT);
+
+    showProgress(10, "Filtrando intersecciones...");
+    const intersecting = rioFeats.filter(rf => {
+        try { for (const ef of feats) { if (turf.booleanIntersects(rf, ef)) return true; } return false; } catch { return false; }
+    });
+
+    if (!intersecting.length) { addResult(`\n\n<span class="r-info">No se encontro rio asociado al embalse.</span>`); return; }
+
+    const rioLength = {};
+    intersecting.forEach(f => { const n=f.properties?.nom_rio, l=f.properties?.long_rio_m||0; if(n&&(!rioLength[n]||l>rioLength[n]))rioLength[n]=l; });
+    const sortedRios = Object.entries(rioLength).sort((a,b) => b[1]-a[1]);
+    const mainRiver = sortedRios[0][0];
+    const mainRiverFeat = intersecting.find(f => f.properties?.nom_rio === mainRiver);
+    const codPfaf = mainRiverFeat?.properties?.cod_pfafrio;
+
+    showProgress(20, `Obteniendo rio ${mainRiver}...`);
+    const fullRiver = codPfaf ? await fetchRiverByCode(codPfaf) : null;
+    const rc = fullRiver ? flatCoords(fullRiver.geometry) : null;
+
+    if (!rc || rc.length < 2) { addResult(`\n\n<span class="r-info">No se pudo obtener la geometria del rio principal.</span>`); return; }
+
+    showProgress(30, "Analizando interseccion con embalse...");
+    const insideIdx = [];
+    for (let i = 0; i < rc.length; i++) {
+        try {
+            const pt = turf.point(rc[i]);
+            for (const ef of feats) { if (turf.booleanPointInPolygon(pt, ef)) { insideIdx.push(i); break; } }
+        } catch {}
+    }
+
+    let cutIdx;
+    if (insideIdx.length) {
+        cutIdx = insideIdx[Math.floor(insideIdx.length / 2)];
+    } else {
+        let minD = Infinity; cutIdx = 0;
+        for (let i = 0; i < rc.length; i++) {
+            const dx = rc[i][0] - embCent[0], dy = rc[i][1] - embCent[1];
+            const d = dx*dx + dy*dy;
+            if (d < minD) { minD = d; cutIdx = i; }
+        }
+    }
+
+    showProgress(40, "Calculando elevaciones...");
+    const elevFirst = await getElevation(rc[0][0], rc[0][1]);
+    const elevLast = await getElevation(rc[rc.length-1][0], rc[rc.length-1][1]);
+    const refElev = await getElevation(rc[cutIdx][0], rc[cutIdx][1]);
+
+    const firstIsCabecera = (elevFirst != null && elevLast != null)
+        ? elevFirst >= elevLast : true;
+
+    const upCoords = firstIsCabecera ? rc.slice(0, cutIdx + 1) : rc.slice(cutIdx);
+    const dnCoords = firstIsCabecera ? rc.slice(cutIdx) : rc.slice(0, cutIdx + 1);
+
+    const upFeat = upCoords.length >= 2 ? {
+        type: "Feature", geometry: { type: "LineString", coordinates: upCoords },
+        properties: { nom_rio: mainRiver, cod_pfafrio: codPfaf, _pos: "aguas arriba",
+            _elev: firstIsCabecera ? elevFirst : elevLast }
+    } : null;
+    const dnFeat = dnCoords.length >= 2 ? {
+        type: "Feature", geometry: { type: "LineString", coordinates: dnCoords },
+        properties: { nom_rio: mainRiver, cod_pfafrio: codPfaf, _pos: "aguas abajo",
+            _elev: firstIsCabecera ? elevLast : elevFirst }
+    } : null;
+
+    const otherFeats = intersecting.filter(f => f.properties?.nom_rio !== mainRiver);
+    otherFeats.forEach(f => { f.properties._pos = "aguas arriba"; });
+    lastUpstreamFeats = [upFeat].filter(Boolean).concat(otherFeats);
+    try { document.getElementById("btn-saih-arriba").disabled = false; } catch {}
+    try { document.getElementById("btn-saih-arriba-presa").disabled = false; } catch {}
+
+    const allSegments = [upFeat, dnFeat].filter(Boolean).concat(otherFeats);
+    extraLayer = L.geoJSON({type:"FeatureCollection",features:allSegments}, {
+        style: f => {
+            if(f.properties?.cod_pfafrio===codPfaf) return f.properties?._pos==="aguas arriba"?{color:"#4CAF50",weight:3,opacity:0.9}:{color:"#FF5722",weight:3,opacity:0.9};
+            return {color:"#4CAF50",weight:2.5,opacity:0.7};
+        },
+        onEachFeature: (f,ly) => { const rp=f.properties||{}; ly.bindPopup(`<b>${rp.nom_rio||"-"}</b>${rp.cod_pfafrio===codPfaf?" (principal)":""}<br>${rp._pos||"-"}<br>Elevacion: ${rp._elev!=null?rp._elev.toFixed(0)+" m":"-"}`); }
+    }).addTo(map);
+
+    showProgress(50, "Trazando recorrido al mar...");
+    const trace = await traceToSea(codPfaf, (step, max, label) => {
+        showProgress(50 + (step / (max + 1)) * 40, label);
+    });
+    const allDownstream = (dnFeat ? [dnFeat] : []).concat(trace.features);
+    lastDownstreamFeats = allDownstream;
+    try { document.getElementById("btn-saih-abajo").disabled = false; } catch {}
+    try { document.getElementById("btn-saih-abajo-presa").disabled = false; } catch {}
+
+    if (trace.features.length) {
+        const colorMap = buildTraceColorMap(trace.names);
+        traceLayer = L.geoJSON({type:"FeatureCollection",features:trace.features}, {
+            style: f => ({color:colorMap[f.properties?._traceRiver]||"#E91E63",weight:3.5,opacity:0.85}),
+            onEachFeature: (f,ly) => { const rp=f.properties||{}; ly.bindPopup(`<b>${rp.nom_rio||"-"}</b><br>Elevacion: ${rp._elev!=null?rp._elev.toFixed(0)+" m":"-"}`); }
+        }).addTo(map);
+    }
+
+    showProgress(92, "Buscando ARPSIs...");
+    const arpsiResult = await findArpsis(allDownstream);
+    if (arpsiResult.length) {
+        arpsiLayer = L.geoJSON({type:"FeatureCollection",features:arpsiResult}, {
+            style: () => ({color:"#FF9800",weight:2.5,opacity:0.8,dashArray:"6 4",fillOpacity:0}),
+            onEachFeature: (f,ly) => { const ap=f.properties||{}; ly.bindPopup(`<b>ARPSI: ${ap.apsf_name||"-"}</b><br>Codigo: ${ap.apsfr_code||"-"}`); }
+        }).addTo(map);
+    }
+
+    showProgress(100, "Completado");
+    let distDesemb = 0;
+    allDownstream.forEach(f => { try { distDesemb += turf.length(f, { units: "kilometers" }); } catch {} });
+
+    addResult(`\n`);
+    if(refElev!=null) addResult(`\n<span class="r-info">Elevacion en el embalse: ${refElev.toFixed(0)} m</span>`);
+    if(distDesemb>0) addResult(`\n<span class="r-info">Distancia a desembocadura: ${distDesemb.toFixed(1)} km</span>`);
+    addResult(`\n\n<span class="r-name">Rio principal: ${mainRiver}</span>`);
+
+    if(sortedRios.length>1){addResult(`\n\n<span class="r-label">Afluentes al embalse:</span>`);sortedRios.slice(1).forEach(([n])=>addResult(`\n  - ${n}`));}
+
+    if(trace.names.length){const colorMap=buildTraceColorMap(trace.names);addResult(`\n\n<span class="r-label">Recorrido al mar:</span>`);addResult(`\n  <span style="color:#FF5722;">●</span> ${mainRiver} (aguas abajo embalse)`);trace.names.forEach(n=>addResult(`\n  <span style="color:${colorMap[n]};">●</span> ${n}`));}
+
+    if(arpsiResult.length){const ua=[...new Set(arpsiResult.map(f=>f.properties?.apsf_name).filter(Boolean))];addResult(`\n\n<span class="r-label">ARPSIs aguas abajo (${ua.length}):</span>`);ua.forEach(n=>addResult(`\n  - ${n}`));}
+    else addResult(`\n\n<span class="r-info">No se encontraron ARPSIs aguas abajo.</span>`);
+
+    addResult(`\n\n<span class="r-info" style="font-size:11px;">Verde = aguas arriba / afluentes  |  Rojo = aguas abajo  |  Colores = recorrido al mar  |  Naranja = ARPSIs</span>`);
+    const allBounds = resultLayer.getBounds().extend(extraLayer.getBounds());
+    if(traceLayer)allBounds.extend(traceLayer.getBounds());
+    if(arpsiLayer)allBounds.extend(arpsiLayer.getBounds());
+    map.fitBounds(allBounds.pad(0.1));
+}
+
+async function analizarEmbalse() {
+    if (!lastEmbalseFeats || !resultLayer) return;
+    document.getElementById("btn-embalse").disabled = true;
+    document.getElementById("btn-embalse-analisis").disabled = true;
+    addResult(`\n\n<span class="r-label">Analizando cauces y ARPSIs...</span>`);
+    try {
+        await runCauceAnalysis(lastEmbalseFeats);
+    } catch(e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
+    finally { hideProgress(); document.getElementById("btn-embalse").disabled=false; document.getElementById("btn-embalse-analisis").disabled=false; }
+}
+
+async function analizarPresa() {
+    if (!lastGeoJSON || !resultLayer) return;
+    document.getElementById("btn-presa").disabled = true;
+    document.getElementById("btn-presa-analisis").disabled = true;
+
+    addResult(`\n\n<span class="r-label">Buscando embalse asociado...</span>`);
+    showProgress(0, "Buscando embalse asociado...");
+
+    try {
+        const presaCoord = lastGeoJSON.features[0].geometry.coordinates;
+        const presaPt = turf.point(presaCoord);
+
+        let embalseFeats = null;
+        for (const buffer of [0.005, 0.01, 0.02, 0.05]) {
+            showProgress(5, `Buscando embalses (radio ${(buffer*111).toFixed(0)} km)...`);
+            const bbox = `${presaCoord[0]-buffer},${presaCoord[1]-buffer},${presaCoord[0]+buffer},${presaCoord[1]+buffer}`;
+            const resp = await fetch(`${OGC_EMBALSES}?f=application%2Fgeo%2Bjson&limit=${PAGE_LIMIT}&sortby=nombre&bbox=${bbox}`);
+            const candidates = resp.ok ? (await resp.json()).features || [] : [];
+            if (!candidates.length) continue;
+
+            const containing = candidates.filter(ef => {
+                try { return turf.booleanPointInPolygon(presaPt, ef); } catch { return false; }
+            });
+            if (containing.length) { embalseFeats = containing; break; }
+
+            let minDist = Infinity, closest = null;
+            for (const ef of candidates) {
+                try { const d = turf.pointToLineDistance(presaPt, turf.polygonToLine(ef), {units:"kilometers"}); if (d < minDist) { minDist = d; closest = ef; } } catch {}
+            }
+            if (closest && minDist < 2) { embalseFeats = [closest]; break; }
+        }
+
+        if (!embalseFeats || !embalseFeats.length) {
+            addResult(`\n\n<span class="r-info">No se encontro embalse asociado a esta presa.</span>`);
+            return;
+        }
+
+        const embName = embalseFeats[0].properties?.nombre || "desconocido";
+        addResult(`\n<span class="r-label">Embalse:</span> ${embName}`);
+
+        resultLayer.addData({ type:"FeatureCollection", features:embalseFeats });
+
+        addResult(`\n\n<span class="r-label">Analizando cauces y ARPSIs...</span>`);
+        await runCauceAnalysis(embalseFeats);
+
+    } catch(e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
+    finally { hideProgress(); document.getElementById("btn-presa").disabled=false; document.getElementById("btn-presa-analisis").disabled=false; }
+}
+
+// --- PRESAS ---
+const getPresaName = setupAutocomplete("inp-presa", "suggestions-presa", OGC_PRESAS, "nombre",
+    p => p.cauce ? `Cauce: ${p.cauce}` : null,
+    name => searchPresa(name)
+);
+
+async function searchPresa(name) {
+    if (!name) name = getPresaName();
+    if (!name) { setResult("Escriba un nombre de presa."); return; }
+    clearMap();
+    document.getElementById("info-banner").style.display = "none";
+    document.getElementById("btn-presa").disabled = true;
+    setResult(`<span class="r-info">Buscando presa "${name}"...</span>`);
+    try {
+        const filter = encodeURIComponent(`nombre = '${name}'`);
+        const resp = await fetch(`${OGC_PRESAS}?f=application%2Fgeo%2Bjson&limit=50&filter=${filter}&filter-lang=cql-text`);
+        if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+        const data = await resp.json();
+        const feats = data.features || [];
+        if (!feats.length) { setResult(`<span class="r-info">No se encontro "${name}".</span>`); return; }
+        lastGeoJSON = { type:"FeatureCollection", features:feats };
+        resultLayer = L.geoJSON(lastGeoJSON, {
+            pointToLayer: (f,ll) => L.circleMarker(ll, { radius:8, fillColor:"#FF9800", color:"#E65100", weight:2, fillOpacity:0.8 }),
+            onEachFeature: (f,ly) => { const p=f.properties||{}; ly.bindPopup(`<b>${p.nombre||"-"}</b><br>Cauce: ${p.cauce||"-"}<br>Tipologia: ${p.tipologia||"-"}<br>Fase: ${p.fase||"-"}<br>Provincia: ${p.provincia||"-"}`); }
+        }).addTo(map);
+        map.fitBounds(resultLayer.getBounds().pad(0.3));
+        document.getElementById("dl-btn").disabled = false;
+        const p = feats[0].properties||{};
+        const cent = getCentroid(lastGeoJSON);
+        const demar = cent ? findDemarcacion(cent[0], cent[1]) : null;
+        document.getElementById("btn-presa-analisis").disabled = false;
+        document.getElementById("btn-aforo-presa").disabled = false;
+        setResult(`<span class="r-name">${p.nombre||name}</span>\n\n<span class="r-label">Demarcacion:</span> ${demar||"-"}\n<span class="r-label">Cauce:</span> ${p.cauce||"-"}\n<span class="r-label">Tipologia:</span> ${p.tipologia||"-"}\n<span class="r-label">Fase:</span> ${p.fase||"-"}\n<span class="r-label">CCAA:</span> ${p.ccaa||"-"}\n<span class="r-label">Provincia:</span> ${p.provincia||"-"}\n<span class="r-label">Resultados:</span> ${feats.length}`);
+    } catch(e) { setResult(`<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
+    finally { document.getElementById("btn-presa").disabled = false; }
+}
+
+// --- Download ---
+function downloadResult() {
+    if (!lastGeoJSON) return;
+    const blob = new Blob([JSON.stringify(lastGeoJSON, null, 2)], { type:"application/geo+json" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "resultado.geojson"; a.click();
+}
+
+// --- Argos Hydro: estaciones de aforo y embalses ---
+const ARGOS_BASE = "/argos";
+const ARGOS_API = ARGOS_BASE + "/api";
+const ARGOS_WFS = ARGOS_BASE + "/geoserver/wfs";
+let argosToken = null, argosLayer = null, lastSaihResults = [];
+
+async function argosLogin() {
+    if (argosToken) return argosToken;
+    try {
+        const r = await fetch(`${ARGOS_API}/Authorization`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username: "Brcuenca", password: "MamaPato25" })
+        });
+        if (!r.ok) return null;
+        argosToken = (await r.json()).accessToken;
+        return argosToken;
+    } catch { return null; }
+}
+
+async function argosChart(productId, elementId) {
+    const tk = await argosLogin();
+    if (!tk) return null;
+    try {
+        const r = await fetch(`${ARGOS_API}/Map/chart/product/${productId}/element/${elementId}`, { headers: { Authorization: `Bearer ${tk}` } });
+        if (!r.ok) return null;
+        return await r.json();
+    } catch { return null; }
+}
+
+async function argosWfs(productId, iconType, bbox) {
+    const tk = await argosLogin();
+    if (!tk) return [];
+    try {
+        const url = `${ARGOS_WFS}?service=WFS&version=2.0.0&request=GetFeature&typeNames=argos:sensors&outputFormat=application/json&count=5000&viewParams=id_account:${ARGOS_ACCOUNT};id_product:${productId};icon_type:${iconType};icon_format:png;feature_type:product_sensors&bbox=${bbox},EPSG:4326`;
+        const r = await fetch(url, { headers: { Authorization: `Bearer ${tk}` } });
+        if (!r.ok) return [];
+        return (await r.json()).features || [];
+    } catch { return []; }
+}
+
+function lastVal(chart) { return chart?.dates?.length ? chart.values[chart.values.length - 1] : null; }
+function lastTime(chart) { return chart?.dates?.length ? chart.dates[chart.dates.length - 1] : null; }
+function fmtTime(t) { if (!t) return ""; return new Date(t).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }); }
+
+async function buscarAforos(tipo) {
+    if (!resultLayer) return;
+    const btnId = "btn-aforo-" + tipo;
+    document.getElementById(btnId).disabled = true;
+    if (argosLayer) { map.removeLayer(argosLayer); argosLayer = null; }
+    lastSaihResults = [];
+
+    addResult(`\n\n<span class="r-label">Buscando estaciones de aforo...</span>`);
+    showProgress(0, "Conectando con Argos...");
+
+    try {
+        const tk = await argosLogin();
+        if (!tk) { addResult(`\n<span style="color:#ff6b6b;">Error: no se pudo conectar con Argos</span>`); return; }
+
+        const useDownstream = lastDownstreamFeats && lastDownstreamFeats.length;
+        const searchFeats = useDownstream ? lastDownstreamFeats : (lastGeoJSON?.features || []);
+        const allBounds = L.latLngBounds([]);
+        if (useDownstream) {
+            searchFeats.forEach(f => { try { const c = f.geometry.type === "LineString" ? f.geometry.coordinates : f.geometry.coordinates.flat(); c.forEach(v => allBounds.extend([v[1], v[0]])); } catch {} });
+        } else {
+            allBounds.extend(resultLayer.getBounds());
+        }
+        if (!allBounds.isValid()) return;
+        const pad = 0.05;
+        const bboxStr = `${allBounds.getWest()-pad},${allBounds.getSouth()-pad},${allBounds.getEast()+pad},${allBounds.getNorth()+pad}`;
+
+        showProgress(15, useDownstream ? "Buscando SAIH en todo el recorrido..." : "Buscando estaciones SAIH...");
+        const allGauges = await argosWfs(ARGOS_PF, "river_flow", bboxStr);
+        if (!allGauges.length) { addResult(`\n<span class="r-info">No se encontraron estaciones SAIH en esta zona.</span>`); return; }
+        const onRiver = filterByProximity(allGauges, searchFeats, 2);
+        const onIds = new Set(onRiver.map(s => s.properties.id_element));
+        const inZone = allGauges.filter(s => !onIds.has(s.properties.id_element));
+        argosLayer = L.layerGroup().addTo(map);
+        let html = "";
+        if (onRiver.length) {
+            html += `\n\n<span class="r-label">En el cauce (${onRiver.length}):</span>`;
+            for (let i = 0; i < onRiver.length; i++) { showProgress(20 + (i / allGauges.length) * 50, `${onRiver[i].properties.name}...`); html += await renderGauge(onRiver[i], true); }
+        }
+        if (inZone.length) {
+            html += `\n\n<span class="r-label" style="color:#8892b0;">En la zona (${inZone.length}):</span>`;
+            for (let i = 0; i < inZone.length; i++) { showProgress(70 + (i / allGauges.length) * 25, `${inZone[i].properties.name}...`); html += await renderGauge(inZone[i], false); }
+        }
+        if (lastSaihResults.length) html += `\n\n<a href="#" onclick="openSaihDashboard();return false" style="color:#64B5F6;font-size:12px;">Abrir dashboard SAIH en ventana</a>`;
+        addResult(html);
+        showProgress(100, "Completado");
+        setTimeout(hideProgress, 600);
+
+    } catch (e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
+    finally { hideProgress(); document.getElementById(btnId).disabled = false; }
+}
+
+async function renderGauge(st, onRiver) {
+    if (onRiver === undefined) onRiver = true;
+    const name = st.properties.name, elemId = st.properties.id_element, coords = st.geometry.coordinates;
+    const [flowData, levelData] = await Promise.all([argosChart(ARGOS_PF, elemId), argosChart(ARGOS_PL, elemId)]);
+
+    const flow = lastVal(flowData), level = lastVal(levelData);
+    const t = fmtTime(lastTime(flowData) || lastTime(levelData));
+    const thresholds = levelData?.thresholds || flowData?.thresholds || [];
+    lastSaihResults.push({ name, flow, level, time: t, thresholds, alertColor: "#4CAF50", alertLevel: "" });
+
+    let alertColor = "#4CAF50", alertLevel = "";
+    if (level != null && thresholds.length) {
+        for (const th of thresholds.sort((a, b) => b.value - a.value)) {
+            if (level >= th.value) { alertColor = th.color; alertLevel = ` ⚠ ${th.translationTag.split(".").pop().toUpperCase()}`; break; }
+        }
+    }
+    lastSaihResults[lastSaihResults.length - 1].alertColor = alertColor;
+    lastSaihResults[lastSaihResults.length - 1].alertLevel = alertLevel;
+
+    const marker = L.circleMarker([coords[1], coords[0]], {
+        radius: onRiver ? 8 : 5, fillColor: alertColor, color: "#fff", weight: onRiver ? 2 : 1, fillOpacity: onRiver ? 0.9 : 0.5
+    }).addTo(argosLayer);
+
+    let popup = `<b>${name}</b><br>`;
+    if (flow != null) popup += `Caudal: <b>${flow.toFixed(2)} m³/s</b><br>`;
+    if (level != null) popup += `Nivel: <b>${level.toFixed(2)} m</b><br>`;
+    if (t) popup += `<small>${t}</small>`;
+    if (thresholds.length) { popup += `<br><small>Umbrales:`; thresholds.forEach(th => { popup += ` <span style="color:${th.color}">●</span>${th.value}m`; }); popup += `</small>`; }
+    marker.bindPopup(popup);
+    if (onRiver) {
+        let tipLabel = name;
+        const tipParts = [];
+        if (flow != null) tipParts.push(`${flow.toFixed(1)} m³/s`);
+        if (level != null) tipParts.push(`${level.toFixed(2)} m`);
+        if (tipParts.length) tipLabel += ` — ${tipParts.join(" | ")}`;
+        marker.bindTooltip(tipLabel, { permanent: true, direction: "right", offset: [10, 0], className: "saih-label" });
+    } else {
+        marker.bindTooltip(name, { permanent: false, direction: "right" });
+    }
+
+    let html = `\n\n<span style="color:${alertColor};">●</span> <b>${name}</b>${alertLevel}`;
+    if (flow != null) html += `\n  Caudal: ${flow.toFixed(2)} m³/s`;
+    if (level != null) html += `\n  Nivel: ${level.toFixed(2)} m`;
+    if (thresholds.length) { html += `\n  <span class="r-info">Umbrales:`; thresholds.forEach(th => { html += ` <span style="color:${th.color};">●</span>${th.conditionSymbol}${th.value}m`; }); html += `</span>`; }
+    if (t) html += `\n  <span class="r-info">Actualizado: ${t}</span>`;
+    return html;
+}
+
+async function buscarDatosEmbalse() {
+    if (!resultLayer) return;
+    document.getElementById("btn-aforo-embalse").disabled = true;
+    if (argosLayer) { map.removeLayer(argosLayer); argosLayer = null; }
+
+    addResult(`\n\n<span class="r-label">Buscando datos del embalse...</span>`);
+    showProgress(0, "Conectando con Argos...");
+
+    try {
+        const tk = await argosLogin();
+        if (!tk) { addResult(`\n<span style="color:#ff6b6b;">Error: no se pudo conectar con Argos</span>`); return; }
+
+        const bb = resultLayer.getBounds();
+        const pad = 0.01;
+        const bboxStr = `${bb.getWest()-pad},${bb.getSouth()-pad},${bb.getEast()+pad},${bb.getNorth()+pad}`;
+        const searchName = lastGeoJSON?.features?.[0]?.properties?.nombre?.toUpperCase() || "";
+
+        showProgress(15, "Buscando embalses...");
+        let reservoirs = await argosWfs(ARGOS_PV, "reservoir_volume", bboxStr);
+        if (searchName && reservoirs.length > 1) {
+            const exact = reservoirs.filter(r => r.properties.name.toUpperCase().includes(searchName) || searchName.includes(r.properties.name.toUpperCase()));
+            if (exact.length) reservoirs = exact;
+        }
+
+        if (!reservoirs.length) {
+            addResult(`\n<span class="r-info">No se encontro este embalse en Argos.</span>`);
+            return;
+        }
+
+        argosLayer = L.layerGroup().addTo(map);
+        let html = `\n\n<span class="r-label">Datos del embalse (${reservoirs.length}):</span>`;
+        for (let i = 0; i < reservoirs.length; i++) {
+            const st = reservoirs[i], name = st.properties.name, elemId = st.properties.id_element;
+            const capacity = st.properties.capacity, coords = st.geometry.coordinates;
+            showProgress(20 + (i / reservoirs.length) * 70, `${name}...`);
+
+            const [volData, lvlData, outData] = await Promise.all([
+                argosChart(ARGOS_PV, elemId), argosChart(ARGOS_PLV, elemId), argosChart(ARGOS_PO, elemId)
+            ]);
+
+            const vol = lastVal(volData), lvl = lastVal(lvlData), out = lastVal(outData);
+            const t = fmtTime(lastTime(volData) || lastTime(lvlData));
+            const pct = (vol != null && capacity) ? (vol / capacity * 100).toFixed(1) : null;
+
+            let fillColor = "#2196F3";
+            if (pct != null) { if (pct < 25) fillColor = "#F44336"; else if (pct < 50) fillColor = "#FF9800"; else if (pct > 90) fillColor = "#0D47A1"; }
+
+            const marker = L.circleMarker([coords[1], coords[0]], {
+                radius: 10, fillColor, color: "#fff", weight: 2, fillOpacity: 0.9
+            }).addTo(argosLayer);
+
+            let popup = `<b>${name}</b><br>`;
+            if (vol != null) popup += `Volumen: <b>${vol.toFixed(1)} hm³</b>`;
+            if (capacity) popup += ` / ${capacity} hm³`;
+            if (pct != null) popup += ` (<b>${pct}%</b>)`;
+            popup += `<br>`;
+            if (lvl != null) popup += `Nivel: <b>${lvl.toFixed(1)} m</b><br>`;
+            if (out != null) popup += `Desembalse: <b>${out.toFixed(1)} m³/s</b><br>`;
+            if (t) popup += `<small>${t}</small>`;
+            marker.bindPopup(popup);
+            marker.bindTooltip(name, { permanent: false, direction: "right" });
+
+            html += `\n\n<span style="color:${fillColor};">●</span> <b>${name}</b>`;
+            if (vol != null) { html += `\n  Volumen: ${vol.toFixed(1)} hm³`; if (capacity) html += ` / ${capacity} hm³`; if (pct != null) html += ` (${pct}%)`; }
+            if (lvl != null) html += `\n  Nivel: ${lvl.toFixed(1)} m`;
+            if (out != null) html += `\n  Desembalse: ${out.toFixed(1)} m³/s`;
+            if (t) html += `\n  <span class="r-info">Actualizado: ${t}</span>`;
+        }
+
+        addResult(html);
+        showProgress(100, "Completado");
+        setTimeout(hideProgress, 600);
+
+    } catch (e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
+    finally { hideProgress(); document.getElementById("btn-aforo-embalse").disabled = false; }
+}
+
+async function buscarSaihAguasArriba() {
+    if (!lastUpstreamFeats || !lastUpstreamFeats.length) return;
+    document.getElementById("btn-saih-arriba").disabled = true;
+    if (argosLayer) { map.removeLayer(argosLayer); argosLayer = null; }
+    lastSaihResults = [];
+
+    addResult(`\n\n<span class="r-label">Buscando estaciones SAIH aguas arriba...</span>`);
+    showProgress(0, "Conectando con Argos...");
+
+    try {
+        const tk = await argosLogin();
+        if (!tk) { addResult(`\n<span style="color:#ff6b6b;">Error: no se pudo conectar con Argos</span>`); return; }
+
+        showProgress(10, "Calculando bbox aguas arriba...");
+        const allBounds = L.latLngBounds([]);
+        lastUpstreamFeats.forEach(f => {
+            try {
+                const coords = f.geometry.type === "LineString" ? f.geometry.coordinates : f.geometry.coordinates.flat();
+                coords.forEach(c => allBounds.extend([c[1], c[0]]));
+            } catch {}
+        });
+        if (!allBounds.isValid()) { addResult(`\n<span class="r-info">No hay geometria aguas arriba.</span>`); return; }
+
+        const pad = 0.05;
+        const bboxStr = `${allBounds.getWest()-pad},${allBounds.getSouth()-pad},${allBounds.getEast()+pad},${allBounds.getNorth()+pad}`;
+
+        showProgress(20, "Buscando estaciones...");
+        const allGauges = await argosWfs(ARGOS_PF, "river_flow", bboxStr);
+        if (!allGauges.length) { addResult(`\n<span class="r-info">No se encontraron estaciones SAIH aguas arriba.</span>`); return; }
+        showProgress(30, "Clasificando...");
+        const onRiver = filterByProximity(allGauges, lastUpstreamFeats, 2);
+        const onIds = new Set(onRiver.map(s => s.properties.id_element));
+        const inZone = allGauges.filter(s => !onIds.has(s.properties.id_element));
+        argosLayer = L.layerGroup().addTo(map);
+        let html = "";
+        if (onRiver.length) {
+            html += `\n\n<span class="r-label">En el cauce aguas arriba (${onRiver.length}):</span>`;
+            for (let i = 0; i < onRiver.length; i++) { showProgress(35 + (i / allGauges.length) * 40, `${onRiver[i].properties.name}...`); html += await renderGauge(onRiver[i], true); }
+        }
+        if (inZone.length) {
+            html += `\n\n<span class="r-label" style="color:#8892b0;">En la zona (${inZone.length}):</span>`;
+            for (let i = 0; i < inZone.length; i++) { showProgress(75 + (i / allGauges.length) * 20, `${inZone[i].properties.name}...`); html += await renderGauge(inZone[i], false); }
+        }
+        if (lastSaihResults.length) html += `\n\n<a href="#" onclick="openSaihDashboard();return false" style="color:#64B5F6;font-size:12px;">Abrir dashboard SAIH en ventana</a>`;
+
+        addResult(html);
+        showProgress(100, "Completado");
+        setTimeout(hideProgress, 600);
+
+    } catch (e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
+    finally { hideProgress(); try{document.getElementById("btn-saih-arriba").disabled=false}catch{} try{document.getElementById("btn-saih-arriba-presa").disabled=false}catch{} }
+}
+
+function openSaihDashboard() {
+    if (!lastSaihResults.length) return;
+    const w = window.open("", "_blank", "width=800,height=600");
+    const dk = matchMedia("(prefers-color-scheme:dark)").matches;
+    const bg = dk ? "#111" : "#f5f7fa", bg2 = dk ? "#1a1a1a" : "#fff", tx = dk ? "#e2e8f0" : "#1e293b", tx2 = dk ? "#94a3b8" : "#64748b", bd = dk ? "#333" : "#e2e8f0";
+    let html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Dashboard SAIH</title><style>
+    *{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:${bg};color:${tx};padding:20px}
+    h1{font-size:18px;margin-bottom:16px;color:${tx}}
+    .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+    .card{background:${bg2};border:1px solid ${bd};border-radius:12px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+    .card-name{font-size:14px;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+    .dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+    .card-row{display:flex;justify-content:space-between;padding:4px 0;font-size:13px;border-bottom:1px solid ${bd}}
+    .card-row:last-child{border:none}
+    .card-label{color:${tx2}}.card-val{font-weight:600}
+    .thresh{display:flex;gap:6px;margin-top:6px;font-size:11px;color:${tx2}}
+    .thresh span{display:flex;align-items:center;gap:3px}
+    .thresh-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+    .alert-tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:4px;color:#fff}
+    table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:20px}
+    th{background:${dk?"#222":"#e8e8e8"};padding:8px 6px;text-align:center;font-weight:600;position:sticky;top:0}
+    td{padding:7px 6px;text-align:center;border-bottom:1px solid ${bd}}
+    </style></head><body>
+    <h1>Dashboard Estaciones SAIH (${lastSaihResults.length})</h1>
+    <table><tr><th>Estacion</th><th>Caudal (m³/s)</th><th>Nivel (m)</th><th>Estado</th><th>Hora</th></tr>`;
+    lastSaihResults.forEach(r => {
+        const alert = r.alertLevel ? `<span class="alert-tag" style="background:${r.alertColor}">${r.alertLevel.replace(" ⚠ ","")}</span>` : `<span style="color:#4CAF50">Normal</span>`;
+        html += `<tr><td style="text-align:left;font-weight:600">${r.name}</td><td>${r.flow != null ? r.flow.toFixed(2) : "-"}</td><td>${r.level != null ? r.level.toFixed(2) : "-"}</td><td>${alert}</td><td style="color:${tx2}">${r.time}</td></tr>`;
+    });
+    html += `</table><div class="cards">`;
+    lastSaihResults.forEach(r => {
+        html += `<div class="card"><div class="card-name"><div class="dot" style="background:${r.alertColor}"></div>${r.name}`;
+        if (r.alertLevel) html += ` <span class="alert-tag" style="background:${r.alertColor}">${r.alertLevel.replace(" ⚠ ","")}</span>`;
+        html += `</div>`;
+        if (r.flow != null) html += `<div class="card-row"><span class="card-label">Caudal</span><span class="card-val">${r.flow.toFixed(2)} m³/s</span></div>`;
+        if (r.level != null) html += `<div class="card-row"><span class="card-label">Nivel</span><span class="card-val">${r.level.toFixed(2)} m</span></div>`;
+        if (r.time) html += `<div class="card-row"><span class="card-label">Actualizado</span><span class="card-val">${r.time}</span></div>`;
+        if (r.thresholds?.length) {
+            html += `<div class="thresh">`;
+            r.thresholds.forEach(t => { html += `<span><span class="thresh-dot" style="background:${t.color}"></span>${t.conditionSymbol}${t.value}m</span>`; });
+            html += `</div>`;
+        }
+        html += `</div>`;
+    });
+    html += `</div></body></html>`;
+    w.document.write(html);
+    w.document.close();
+}
+
+function filterByProximity(stations, lineFeatures, maxKm) {
+    if (!lineFeatures.length) return stations;
+    const thresh = maxKm / 111.32;
+    const allVerts = [];
+    lineFeatures.forEach(f => {
+        try {
+            const c = f.geometry.type === "MultiLineString" ? f.geometry.coordinates.flat() : f.geometry.coordinates;
+            for (let i = 0; i < c.length; i += 5) allVerts.push(c[i]);
+            allVerts.push(c[c.length - 1]);
+        } catch {}
+    });
+    if (!allVerts.length) return stations;
+    return stations.filter(st => {
+        const [sx, sy] = st.geometry.coordinates;
+        for (const v of allVerts) {
+            const dx = v[0] - sx, dy = v[1] - sy;
+            if (dx * dx + dy * dy <= thresh * thresh) return true;
+        }
+        return false;
+    });
+}
+
+async function buscarSaihAguasAbajo() {
+    if (!lastDownstreamFeats || !lastDownstreamFeats.length) return;
+    document.getElementById("btn-saih-abajo").disabled = true;
+    if (argosLayer) { map.removeLayer(argosLayer); argosLayer = null; }
+    lastSaihResults = [];
+
+    addResult(`\n\n<span class="r-label">Buscando estaciones SAIH aguas abajo...</span>`);
+    showProgress(0, "Conectando con Argos...");
+
+    try {
+        const tk = await argosLogin();
+        if (!tk) { addResult(`\n<span style="color:#ff6b6b;">Error: no se pudo conectar con Argos</span>`); return; }
+
+        showProgress(10, "Calculando bbox del recorrido...");
+        const allBounds = L.latLngBounds([]);
+        lastDownstreamFeats.forEach(f => {
+            try {
+                const coords = f.geometry.type === "LineString" ? f.geometry.coordinates : f.geometry.coordinates.flat();
+                coords.forEach(c => allBounds.extend([c[1], c[0]]));
+            } catch {}
+        });
+        if (!allBounds.isValid()) { addResult(`\n<span class="r-info">No hay geometria aguas abajo.</span>`); return; }
+
+        const pad = 0.05;
+        const bboxStr = `${allBounds.getWest()-pad},${allBounds.getSouth()-pad},${allBounds.getEast()+pad},${allBounds.getNorth()+pad}`;
+
+        showProgress(20, "Buscando estaciones...");
+        const allGauges = await argosWfs(ARGOS_PF, "river_flow", bboxStr);
+        if (!allGauges.length) { addResult(`\n<span class="r-info">No se encontraron estaciones SAIH aguas abajo.</span>`); return; }
+        showProgress(30, "Clasificando...");
+        const onRiver = filterByProximity(allGauges, lastDownstreamFeats, 2);
+        const onIds = new Set(onRiver.map(s => s.properties.id_element));
+        const inZone = allGauges.filter(s => !onIds.has(s.properties.id_element));
+        argosLayer = L.layerGroup().addTo(map);
+        let html = "";
+        if (onRiver.length) {
+            html += `\n\n<span class="r-label">En el cauce aguas abajo (${onRiver.length}):</span>`;
+            for (let i = 0; i < onRiver.length; i++) { showProgress(35 + (i / allGauges.length) * 40, `${onRiver[i].properties.name}...`); html += await renderGauge(onRiver[i], true); }
+        }
+        if (inZone.length) {
+            html += `\n\n<span class="r-label" style="color:#8892b0;">En la zona (${inZone.length}):</span>`;
+            for (let i = 0; i < inZone.length; i++) { showProgress(75 + (i / allGauges.length) * 20, `${inZone[i].properties.name}...`); html += await renderGauge(inZone[i], false); }
+        }
+        if (lastSaihResults.length) html += `\n\n<a href="#" onclick="openSaihDashboard();return false" style="color:#64B5F6;font-size:12px;">Abrir dashboard SAIH en ventana</a>`;
+
+        addResult(html);
+        showProgress(100, "Completado");
+        setTimeout(hideProgress, 600);
+
+    } catch (e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
+    finally { hideProgress(); try{document.getElementById("btn-saih-abajo").disabled=false}catch{} try{document.getElementById("btn-saih-abajo-presa").disabled=false}catch{} }
+}
+
+</script>
+</body>
+</html>
