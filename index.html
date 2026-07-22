@@ -190,11 +190,11 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js").catch(() => {});
 }
 
-const OGC_RIOS = "https://wmts.miteco.gob.es/sig-api/ogc/features/v1/collections/agua:rios_comp_pfaf1/items";
-const OGC_ARPSI = "https://wmts.miteco.gob.es/sig-api/ogc/features/v1/collections/agua:Zi_arpsi/items";
-const OGC_EMBALSES = "https://wmts.mapama.gob.es/sig-api/ogc/features/v1/collections/agua:eGISPE_Embalses/items";
-const OGC_PRESAS = "https://wmts.mapama.gob.es/sig-api/ogc/features/v1/collections/agua:eGISPE_Infraestructuras/items";
-const OGC_SUBTRAMOS = "https://wmts.mapama.gob.es/sig-api/ogc/features/v1/collections/agua:rios_pfaf_cx1/items";
+const OGC_RIOS = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:rios_comp_pfaf1/items";
+const OGC_ARPSI = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:Zi_arpsi/items";
+const OGC_EMBALSES = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:eGISPE_Embalses/items";
+const OGC_PRESAS = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:eGISPE_Infraestructuras/items";
+const OGC_SUBTRAMOS = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:rios_pfaf_cx1/items";
 const PAGE_LIMIT = 1000;
 
 // --- Map ---
