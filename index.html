@@ -831,7 +831,12 @@ function downloadResult() {
 }
 
 // --- Argos Hydro: estaciones de aforo y embalses ---
-const ARGOS_BASE = "/argos";
+// La API real de Argos no tiene CORS habilitado, así que no se puede llamar
+// directamente desde una web estática (GitHub Pages). ARGOS_BASE apunta a un
+// Cloudflare Worker propio que solo reenvía la petición añadiendo las
+// cabeceras CORS (código en argos-proxy-worker/worker.js) — funciona igual
+// en local que en producción, sin depender de server.js.
+const ARGOS_BASE = "https://argos-hydro-proxy.riosyembalses.workers.dev";
 const ARGOS_API = ARGOS_BASE + "/api";
 const ARGOS_WFS = ARGOS_BASE + "/geoserver/wfs";
 let argosToken = null, argosLayer = null, lastSaihResults = [];
