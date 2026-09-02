@@ -185,11 +185,14 @@ if ("serviceWorker" in navigator) {
 
 const OGC_RIOS = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:rios_comp_pfaf1/items";
 const OGC_ARPSI = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:Zi_arpsi/items";
-// La OGC API dejó de publicar el catálogo INSPIRE de embalses (eGISPE_Embalses, con
-// capacidad/tipo) — MITECO indica en su web que lo ofrecerán "en el futuro". El único
-// sustituto disponible hoy es la red SAIH de nivel/volumen (agua:embalses_et), que es
-// de puntos, no polígonos, y usa el campo "descripcion" en vez de "nombre".
-const OGC_EMBALSES = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:embalses_et/items";
+// MITECO dejó de publicar el catálogo de embalses (eGISPE_Embalses) en su OGC API.
+// La red SAIH (agua:embalses_et) resultó ser un mal sustituto: solo 848 puntos y sin
+// cobertura en cuencas de gestión autonómica (p.ej. Asturias/Cantábrico), así que
+// "Tanes" o "Rioseco" no aparecían. El catálogo bueno está en la OGC API del IGN:
+// "standingwater" (INSPIRE HY-P Aguas Estancadas), con cobertura nacional completa,
+// polígonos reales y nombre limpio en el campo "nombre" (coincide con lo que ya
+// esperaba el código original).
+const OGC_EMBALSES = "https://api-features.idee.es/collections/standingwater/items";
 const OGC_SUBTRAMOS = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:rios_pfaf_cx1/items";
 const PAGE_LIMIT = 1000;
 
@@ -220,7 +223,7 @@ const OGC_DEMAR = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collectio
 let demarcacionesGeoJSON = null;
 async function loadDemarcaciones() {
     try {
-        const resp = await fetch(`${OGC_DEMAR}?f=application%2Fgeo%2Bjson&limit=50`);
+        const resp = await fetch(`${OGC_DEMAR}?f=json&limit=50`);
         if (resp.ok) demarcacionesGeoJSON = await resp.json();
     } catch {}
 }
@@ -335,8 +338,8 @@ function setupAutocomplete(inputId, sugId, apiUrl, nameField, subtitleFn, onSele
         if (q.length < 3) { sug.style.display = "none"; return; }
         debounce = setTimeout(async () => {
             try {
-                const filter = encodeURIComponent(`${nameField} LIKE '%${q}%'`);
-                const url = `${apiUrl}?f=application%2Fgeo%2Bjson&limit=200&filter=${filter}&filter-lang=cql-text${extra}`;
+                const filter = encodeURIComponent(`${nameField} ILIKE '%${q}%'`);
+                const url = `${apiUrl}?f=json&limit=200&filter=${filter}&filter-lang=cql-text${extra}`;
                 const resp = await fetch(url);
                 if (!resp.ok) { sug.style.display = "none"; return; }
                 const data = await resp.json();
@@ -372,7 +375,7 @@ const getRioName = setupAutocomplete("inp-rio", "suggestions-rio", OGC_RIOS, "no
 async function fetchBbox(apiUrl, bboxStr, limit) {
     let all = [], si = 0;
     while (true) {
-        const resp = await fetch(`${apiUrl}?f=application%2Fgeo%2Bjson&limit=${limit||PAGE_LIMIT}&startIndex=${si}&bbox=${bboxStr}`);
+        const resp = await fetch(`${apiUrl}?f=json&limit=${limit||PAGE_LIMIT}&startIndex=${si}&bbox=${bboxStr}`);
         if (!resp.ok) break;
         const d = await resp.json(), feats = d.features || [];
         all = all.concat(feats);
@@ -393,7 +396,7 @@ async function searchRiver(name) {
         let all = [], si = 0;
         const filter = encodeURIComponent(`nom_rio = '${name}'`);
         while (true) {
-            const resp = await fetch(`${OGC_RIOS}?f=application%2Fgeo%2Bjson&limit=${PAGE_LIMIT}&startIndex=${si}&filter=${filter}&filter-lang=cql-text`);
+            const resp = await fetch(`${OGC_RIOS}?f=json&limit=${PAGE_LIMIT}&startIndex=${si}&filter=${filter}&filter-lang=cql-text`);
             if (!resp.ok) throw new Error(`API error: ${resp.status}`);
             const d = await resp.json(), feats = d.features || [];
             all = all.concat(feats);
@@ -449,16 +452,16 @@ async function searchRiver(name) {
 }
 
 // --- EMBALSES ---
-const getEmbalseName = setupAutocomplete("inp-embalse", "suggestions-embalse", OGC_EMBALSES, "descripcion",
-    p => p.idsaih || null,
+const getEmbalseName = setupAutocomplete("inp-embalse", "suggestions-embalse", OGC_EMBALSES, "nombre",
+    p => p.id_demarcd || null,
     name => searchEmbalse(name),
-    "&sortby=descripcion"
+    "&sortby=nombre"
 );
 
 // --- Helper: fetch a complete river by Pfafstetter code ---
 async function fetchRiverByCode(code) {
     const filter = encodeURIComponent(`cod_pfafrio = '${code}'`);
-    const resp = await fetch(`${OGC_RIOS}?f=application%2Fgeo%2Bjson&limit=1&filter=${filter}&filter-lang=cql-text`);
+    const resp = await fetch(`${OGC_RIOS}?f=json&limit=1&filter=${filter}&filter-lang=cql-text`);
     if (!resp.ok) return null;
     const data = await resp.json();
     return data.features?.[0] || null;
@@ -647,28 +650,24 @@ async function searchEmbalse(name) {
     document.getElementById("btn-embalse").disabled = true;
     setResult(`<span class="r-info">Buscando embalse "${name}"...</span>`);
     try {
-        const filter = encodeURIComponent(`descripcion = '${name}'`);
-        const resp = await fetch(`${OGC_EMBALSES}?f=application%2Fgeo%2Bjson&limit=50&sortby=descripcion&filter=${filter}&filter-lang=cql-text`);
+        const filter = encodeURIComponent(`nombre ILIKE '${name}'`);
+        const resp = await fetch(`${OGC_EMBALSES}?f=json&limit=50&sortby=nombre&filter=${filter}&filter-lang=cql-text`);
         if (!resp.ok) throw new Error(`API error: ${resp.status}`);
         const data = await resp.json();
         const feats = data.features || [];
         if (!feats.length) { setResult(`<span class="r-info">No se encontro "${name}".</span>`); return; }
         lastGeoJSON = { type:"FeatureCollection", features:feats };
         lastEmbalseFeats = feats;
-        // agua:embalses_et son puntos (red SAIH de nivel/volumen), no polígonos del
-        // embalse — se representan como marcador, no como área rellena.
         resultLayer = L.geoJSON(lastGeoJSON, {
-            pointToLayer: (f,ll) => L.circleMarker(ll, { radius:9, fillColor:"#2196F3", color:"#0D47A1", weight:2, fillOpacity:0.8 }),
-            onEachFeature: (f,ly) => { const p=f.properties||{}; ly.bindPopup(`<b>${p.descripcion||"-"}</b><br>Sistema SAIH: ${p.idsaih||"-"}<br>Punto: ${p.idpunto||"-"}`); }
+            style: () => ({ color:"#0D47A1", weight:2, fillColor:"#2196F3", fillOpacity:0.4 }),
+            onEachFeature: (f,ly) => { const p=f.properties||{}; ly.bindPopup(`<b>${p.nombre||"-"}</b><br>Demarcacion: ${p.id_demarcd||"-"}<br>Superficie: ${p.area?(p.area/10000).toFixed(1)+" ha":"-"}`); }
         }).addTo(map);
         map.fitBounds(resultLayer.getBounds().pad(0.3));
         document.getElementById("dl-btn").disabled = false;
         document.getElementById("btn-embalse-analisis").disabled = false;
         document.getElementById("btn-aforo-embalse").disabled = false;
         const p = feats[0].properties||{};
-        const cent = getCentroid({ type:"FeatureCollection", features:[feats[0]] });
-        const demar = cent ? findDemarcacion(cent[0], cent[1]) : null;
-        setResult(`<span class="r-name">${p.descripcion||name}</span>\n\n<span class="r-label">Demarcacion:</span> ${demar||"-"}\n<span class="r-label">Sistema SAIH:</span> ${p.idsaih||"-"}\n<span class="r-label">Punto:</span> ${p.idpunto||"-"}`);
+        setResult(`<span class="r-name">${p.nombre||name}</span>\n\n<span class="r-label">Demarcacion:</span> ${p.id_demarcd||"-"}\n<span class="r-label">Tipo:</span> ${p.tipo_aestd||"-"} (${p.origend||"-"})\n<span class="r-label">Elevacion:</span> ${p.elevacion!=null?p.elevacion+" m":"-"}\n<span class="r-label">Superficie:</span> ${p.area?(p.area/10000).toFixed(1)+" ha":"-"}`);
     } catch(e) { setResult(`<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
     finally { document.getElementById("btn-embalse").disabled = false; }
 }
@@ -688,13 +687,9 @@ async function runCauceAnalysis(embalseFeats) {
         : `${resultLayer.getBounds().getWest()-SEARCH_BUFFER},${resultLayer.getBounds().getSouth()-SEARCH_BUFFER},${resultLayer.getBounds().getEast()+SEARCH_BUFFER},${resultLayer.getBounds().getNorth()+SEARCH_BUFFER}`;
     const rioFeats = await fetchBbox(OGC_RIOS, searchBbox, PAGE_LIMIT);
 
-    // agua:embalses_et son puntos (estación SAIH), no el polígono del embalse — se
-    // asocia el río más cercano por proximidad en vez de por intersección geométrica.
-    showProgress(10, "Filtrando rios cercanos...");
-    const PROXIMITY_KM = 1.5;
-    const embPt = turf.point(embCent);
+    showProgress(10, "Filtrando intersecciones...");
     const intersecting = rioFeats.filter(rf => {
-        try { return turf.pointToLineDistance(embPt, rf, { units:"kilometers" }) <= PROXIMITY_KM; } catch { return false; }
+        try { for (const ef of feats) { if (turf.booleanIntersects(rf, ef)) return true; } return false; } catch { return false; }
     });
 
     if (!intersecting.length) { addResult(`\n\n<span class="r-info">No se encontro rio asociado al embalse.</span>`); return; }
@@ -712,12 +707,26 @@ async function runCauceAnalysis(embalseFeats) {
 
     if (!rc || rc.length < 2) { addResult(`\n\n<span class="r-info">No se pudo obtener la geometria del rio principal.</span>`); return; }
 
-    showProgress(30, "Localizando punto de corte en el rio...");
-    let cutIdx = 0;
-    try {
-        const nearest = turf.nearestPointOnLine(turf.lineString(rc), embPt);
-        cutIdx = nearest.properties.index ?? 0;
-    } catch { cutIdx = 0; }
+    showProgress(30, "Analizando interseccion con embalse...");
+    const insideIdx = [];
+    for (let i = 0; i < rc.length; i++) {
+        try {
+            const pt = turf.point(rc[i]);
+            for (const ef of feats) { if (turf.booleanPointInPolygon(pt, ef)) { insideIdx.push(i); break; } }
+        } catch {}
+    }
+
+    let cutIdx;
+    if (insideIdx.length) {
+        cutIdx = insideIdx[Math.floor(insideIdx.length / 2)];
+    } else {
+        let minD = Infinity; cutIdx = 0;
+        for (let i = 0; i < rc.length; i++) {
+            const dx = rc[i][0] - embCent[0], dy = rc[i][1] - embCent[1];
+            const d = dx*dx + dy*dy;
+            if (d < minD) { minD = d; cutIdx = i; }
+        }
+    }
 
     showProgress(40, "Calculando elevaciones...");
     const elevFirst = await getElevation(rc[0][0], rc[0][1]);
@@ -979,7 +988,7 @@ async function buscarDatosEmbalse() {
         const bb = resultLayer.getBounds();
         const pad = 0.01;
         const bboxStr = `${bb.getWest()-pad},${bb.getSouth()-pad},${bb.getEast()+pad},${bb.getNorth()+pad}`;
-        const searchName = lastGeoJSON?.features?.[0]?.properties?.descripcion?.toUpperCase() || "";
+        const searchName = lastGeoJSON?.features?.[0]?.properties?.nombre?.toUpperCase() || "";
 
         showProgress(15, "Buscando embalses...");
         let reservoirs = await argosWfs(ARGOS_PV, "reservoir_volume", bboxStr);
