@@ -41,7 +41,7 @@ body { font-family:'Segoe UI',Arial,sans-serif; display:flex; height:100vh; back
 .tab-content.active { display:block; }
 
 .autocomplete-wrapper { position:relative; }
-#inp-rio, #inp-embalse, #inp-presa {
+#inp-rio, #inp-embalse {
     width:100%; padding:10px 12px; border:1px solid #0f3460; border-radius:5px;
     background:#1a1a2e; color:#e0e0e0; font-size:14px;
 }
@@ -131,13 +131,12 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
 <div id="sidebar">
     <div id="sidebar-header">
         <img src="https://www.miteco.gob.es/content/experience-fragments/miteco/language-masters/es/site/header/master-es/_jcr_content/root/header_container/logoImage.coreimg.svg/1764659487766/header-logo.svg" alt="MITECO">
-        <h2>Buscador Hidrologico<br><small>Rios, embalses y presas de Espana</small></h2>
+        <h2>Buscador Hidrologico<br><small>Rios y embalses de Espana</small></h2>
     </div>
 
     <div class="tab-bar">
         <button class="tab-btn active" onclick="switchTab('rios')">Rios</button>
         <button class="tab-btn" onclick="switchTab('embalses')">Embalses</button>
-        <button class="tab-btn" onclick="switchTab('presas')">Presas</button>
     </div>
 
     <div id="tab-rios" class="tab-content active">
@@ -164,19 +163,6 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
         <button class="action" id="btn-saih-abajo" onclick="buscarSaihAguasAbajo()" disabled style="margin-top:6px;background:linear-gradient(135deg,#4A148C,#7B1FA2);">Estaciones SAIH aguas abajo</button>
     </div>
 
-    <div id="tab-presas" class="tab-content">
-        <label>Nombre de la presa</label>
-        <div class="autocomplete-wrapper">
-            <input id="inp-presa" type="text" placeholder="Ej: Aldeadavila, Alcantara..." autocomplete="off">
-            <div id="suggestions-presa" class="suggestions-list"></div>
-        </div>
-        <button class="action" id="btn-presa" onclick="searchPresa()">Buscar</button>
-        <button class="action" id="btn-aforo-presa" onclick="buscarDatosEmbalse()" disabled style="margin-top:6px;background:linear-gradient(135deg,#0D47A1,#2196F3);">Datos del embalse</button>
-        <button class="action" id="btn-presa-analisis" onclick="analizarPresa()" disabled style="margin-top:6px;background:linear-gradient(135deg,#1B5E20,#4CAF50);">Analizar cauces y ARPSIs</button>
-        <button class="action" id="btn-saih-arriba-presa" onclick="buscarSaihAguasArriba()" disabled style="margin-top:6px;background:linear-gradient(135deg,#00695C,#009688);">Estaciones SAIH aguas arriba</button>
-        <button class="action" id="btn-saih-abajo-presa" onclick="buscarSaihAguasAbajo()" disabled style="margin-top:6px;background:linear-gradient(135deg,#4A148C,#7B1FA2);">Estaciones SAIH aguas abajo</button>
-    </div>
-
     <div id="result-panel">
         <h3>Resultado</h3>
         <div id="progress-bar"><div></div><span></span></div>
@@ -189,7 +175,7 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
 </div>
 
 <div id="map">
-    <div class="info-banner" id="info-banner">Busque rios, embalses o presas en el panel</div>
+    <div class="info-banner" id="info-banner">Busque rios o embalses en el panel</div>
 </div>
 
 <script>
@@ -197,11 +183,14 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js").catch(() => {});
 }
 
-const OGC_RIOS = "https://wmts.mapama.gob.es/sig-api/ogc/features/v1/collections/agua:rios_comp_pfaf1/items";
-const OGC_ARPSI = "https://wmts.mapama.gob.es/sig-api/ogc/features/v1/collections/agua:Zi_arpsi/items";
-const OGC_EMBALSES = "https://wmts.mapama.gob.es/sig-api/ogc/features/v1/collections/agua:eGISPE_Embalses/items";
-const OGC_PRESAS = "https://wmts.mapama.gob.es/sig-api/ogc/features/v1/collections/agua:eGISPE_Infraestructuras/items";
-const OGC_SUBTRAMOS = "https://wmts.mapama.gob.es/sig-api/ogc/features/v1/collections/agua:rios_pfaf_cx1/items";
+const OGC_RIOS = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:rios_comp_pfaf1/items";
+const OGC_ARPSI = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:Zi_arpsi/items";
+// La OGC API dejó de publicar el catálogo INSPIRE de embalses (eGISPE_Embalses, con
+// capacidad/tipo) — MITECO indica en su web que lo ofrecerán "en el futuro". El único
+// sustituto disponible hoy es la red SAIH de nivel/volumen (agua:embalses_et), que es
+// de puntos, no polígonos, y usa el campo "descripcion" en vez de "nombre".
+const OGC_EMBALSES = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:embalses_et/items";
+const OGC_SUBTRAMOS = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:rios_pfaf_cx1/items";
 const PAGE_LIMIT = 1000;
 
 const ARGOS_ACCOUNT = "5c25665f-a57a-44d3-9658-9d6b2afe09d6";
@@ -227,7 +216,7 @@ map.on("zoomend", () => {
 });
 
 // --- Demarcaciones (load once) ---
-const OGC_DEMAR = "https://wmts.mapama.gob.es/sig-api/ogc/features/v1/collections/agua:Demarcaciones_ET/items";
+const OGC_DEMAR = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:Demarcaciones_ET/items";
 let demarcacionesGeoJSON = null;
 async function loadDemarcaciones() {
     try {
@@ -317,20 +306,17 @@ function clearMap() {
     document.getElementById("btn-trazar").disabled = true;
     document.getElementById("btn-aforo-rio").disabled = true;
     document.getElementById("btn-aforo-embalse").disabled = true;
-    document.getElementById("btn-aforo-presa").disabled = true;
     document.getElementById("btn-saih-abajo").disabled = true;
     document.getElementById("btn-saih-arriba").disabled = true;
-    document.getElementById("btn-saih-abajo-presa").disabled = true;
-    document.getElementById("btn-saih-arriba-presa").disabled = true;
     lastDownstreamFeats = null;
     lastUpstreamFeats = null;
-    document.getElementById("btn-presa-analisis").disabled = true;
+    document.getElementById("btn-embalse-analisis").disabled = true;
     lastGeoJSON = null;
     document.getElementById("dl-btn").disabled = true;
 }
 
 // --- Tabs ---
-const TAB_IDS = ["rios","embalses","presas"];
+const TAB_IDS = ["rios","embalses"];
 function switchTab(id) {
     document.querySelectorAll(".tab-btn").forEach((b,i) => b.classList.toggle("active", TAB_IDS[i]===id));
     TAB_IDS.forEach(t => document.getElementById("tab-"+t).classList.toggle("active", t===id));
@@ -463,10 +449,10 @@ async function searchRiver(name) {
 }
 
 // --- EMBALSES ---
-const getEmbalseName = setupAutocomplete("inp-embalse", "suggestions-embalse", OGC_EMBALSES, "nombre",
-    p => null,
+const getEmbalseName = setupAutocomplete("inp-embalse", "suggestions-embalse", OGC_EMBALSES, "descripcion",
+    p => p.idsaih || null,
     name => searchEmbalse(name),
-    "&sortby=nombre"
+    "&sortby=descripcion"
 );
 
 // --- Helper: fetch a complete river by Pfafstetter code ---
@@ -661,17 +647,19 @@ async function searchEmbalse(name) {
     document.getElementById("btn-embalse").disabled = true;
     setResult(`<span class="r-info">Buscando embalse "${name}"...</span>`);
     try {
-        const filter = encodeURIComponent(`nombre = '${name}'`);
-        const resp = await fetch(`${OGC_EMBALSES}?f=application%2Fgeo%2Bjson&limit=50&sortby=nombre&filter=${filter}&filter-lang=cql-text`);
+        const filter = encodeURIComponent(`descripcion = '${name}'`);
+        const resp = await fetch(`${OGC_EMBALSES}?f=application%2Fgeo%2Bjson&limit=50&sortby=descripcion&filter=${filter}&filter-lang=cql-text`);
         if (!resp.ok) throw new Error(`API error: ${resp.status}`);
         const data = await resp.json();
         const feats = data.features || [];
         if (!feats.length) { setResult(`<span class="r-info">No se encontro "${name}".</span>`); return; }
         lastGeoJSON = { type:"FeatureCollection", features:feats };
         lastEmbalseFeats = feats;
+        // agua:embalses_et son puntos (red SAIH de nivel/volumen), no polígonos del
+        // embalse — se representan como marcador, no como área rellena.
         resultLayer = L.geoJSON(lastGeoJSON, {
-            style: () => ({ color:"#0D47A1", weight:2, fillColor:"#2196F3", fillOpacity:0.4 }),
-            onEachFeature: (f,ly) => { const p=f.properties||{}; ly.bindPopup(`<b>${p.nombre||"-"}</b><br>Codigo: ${p.cod_embalse||"-"}`); }
+            pointToLayer: (f,ll) => L.circleMarker(ll, { radius:9, fillColor:"#2196F3", color:"#0D47A1", weight:2, fillOpacity:0.8 }),
+            onEachFeature: (f,ly) => { const p=f.properties||{}; ly.bindPopup(`<b>${p.descripcion||"-"}</b><br>Sistema SAIH: ${p.idsaih||"-"}<br>Punto: ${p.idpunto||"-"}`); }
         }).addTo(map);
         map.fitBounds(resultLayer.getBounds().pad(0.3));
         document.getElementById("dl-btn").disabled = false;
@@ -680,7 +668,7 @@ async function searchEmbalse(name) {
         const p = feats[0].properties||{};
         const cent = getCentroid({ type:"FeatureCollection", features:[feats[0]] });
         const demar = cent ? findDemarcacion(cent[0], cent[1]) : null;
-        setResult(`<span class="r-name">${p.nombre||name}</span>\n\n<span class="r-label">Demarcacion:</span> ${demar||"-"}\n<span class="r-label">Codigo:</span> ${p.cod_embalse||"-"}`);
+        setResult(`<span class="r-name">${p.descripcion||name}</span>\n\n<span class="r-label">Demarcacion:</span> ${demar||"-"}\n<span class="r-label">Sistema SAIH:</span> ${p.idsaih||"-"}\n<span class="r-label">Punto:</span> ${p.idpunto||"-"}`);
     } catch(e) { setResult(`<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
     finally { document.getElementById("btn-embalse").disabled = false; }
 }
@@ -700,9 +688,13 @@ async function runCauceAnalysis(embalseFeats) {
         : `${resultLayer.getBounds().getWest()-SEARCH_BUFFER},${resultLayer.getBounds().getSouth()-SEARCH_BUFFER},${resultLayer.getBounds().getEast()+SEARCH_BUFFER},${resultLayer.getBounds().getNorth()+SEARCH_BUFFER}`;
     const rioFeats = await fetchBbox(OGC_RIOS, searchBbox, PAGE_LIMIT);
 
-    showProgress(10, "Filtrando intersecciones...");
+    // agua:embalses_et son puntos (estación SAIH), no el polígono del embalse — se
+    // asocia el río más cercano por proximidad en vez de por intersección geométrica.
+    showProgress(10, "Filtrando rios cercanos...");
+    const PROXIMITY_KM = 1.5;
+    const embPt = turf.point(embCent);
     const intersecting = rioFeats.filter(rf => {
-        try { for (const ef of feats) { if (turf.booleanIntersects(rf, ef)) return true; } return false; } catch { return false; }
+        try { return turf.pointToLineDistance(embPt, rf, { units:"kilometers" }) <= PROXIMITY_KM; } catch { return false; }
     });
 
     if (!intersecting.length) { addResult(`\n\n<span class="r-info">No se encontro rio asociado al embalse.</span>`); return; }
@@ -720,26 +712,12 @@ async function runCauceAnalysis(embalseFeats) {
 
     if (!rc || rc.length < 2) { addResult(`\n\n<span class="r-info">No se pudo obtener la geometria del rio principal.</span>`); return; }
 
-    showProgress(30, "Analizando interseccion con embalse...");
-    const insideIdx = [];
-    for (let i = 0; i < rc.length; i++) {
-        try {
-            const pt = turf.point(rc[i]);
-            for (const ef of feats) { if (turf.booleanPointInPolygon(pt, ef)) { insideIdx.push(i); break; } }
-        } catch {}
-    }
-
-    let cutIdx;
-    if (insideIdx.length) {
-        cutIdx = insideIdx[Math.floor(insideIdx.length / 2)];
-    } else {
-        let minD = Infinity; cutIdx = 0;
-        for (let i = 0; i < rc.length; i++) {
-            const dx = rc[i][0] - embCent[0], dy = rc[i][1] - embCent[1];
-            const d = dx*dx + dy*dy;
-            if (d < minD) { minD = d; cutIdx = i; }
-        }
-    }
+    showProgress(30, "Localizando punto de corte en el rio...");
+    let cutIdx = 0;
+    try {
+        const nearest = turf.nearestPointOnLine(turf.lineString(rc), embPt);
+        cutIdx = nearest.properties.index ?? 0;
+    } catch { cutIdx = 0; }
 
     showProgress(40, "Calculando elevaciones...");
     const elevFirst = await getElevation(rc[0][0], rc[0][1]);
@@ -766,8 +744,7 @@ async function runCauceAnalysis(embalseFeats) {
     const otherFeats = intersecting.filter(f => f.properties?.nom_rio !== mainRiver);
     otherFeats.forEach(f => { f.properties._pos = "aguas arriba"; });
     lastUpstreamFeats = [upFeat].filter(Boolean).concat(otherFeats);
-    try { document.getElementById("btn-saih-arriba").disabled = false; } catch {}
-    try { document.getElementById("btn-saih-arriba-presa").disabled = false; } catch {}
+    document.getElementById("btn-saih-arriba").disabled = false;
 
     const allSegments = [upFeat, dnFeat].filter(Boolean).concat(otherFeats);
     extraLayer = L.geoJSON({type:"FeatureCollection",features:allSegments}, {
@@ -784,8 +761,7 @@ async function runCauceAnalysis(embalseFeats) {
     });
     const allDownstream = (dnFeat ? [dnFeat] : []).concat(trace.features);
     lastDownstreamFeats = allDownstream;
-    try { document.getElementById("btn-saih-abajo").disabled = false; } catch {}
-    try { document.getElementById("btn-saih-abajo-presa").disabled = false; } catch {}
+    document.getElementById("btn-saih-abajo").disabled = false;
 
     if (trace.features.length) {
         const colorMap = buildTraceColorMap(trace.names);
@@ -836,92 +812,6 @@ async function analizarEmbalse() {
         await runCauceAnalysis(lastEmbalseFeats);
     } catch(e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
     finally { hideProgress(); document.getElementById("btn-embalse").disabled=false; document.getElementById("btn-embalse-analisis").disabled=false; }
-}
-
-async function analizarPresa() {
-    if (!lastGeoJSON || !resultLayer) return;
-    document.getElementById("btn-presa").disabled = true;
-    document.getElementById("btn-presa-analisis").disabled = true;
-
-    addResult(`\n\n<span class="r-label">Buscando embalse asociado...</span>`);
-    showProgress(0, "Buscando embalse asociado...");
-
-    try {
-        const presaCoord = lastGeoJSON.features[0].geometry.coordinates;
-        const presaPt = turf.point(presaCoord);
-
-        let embalseFeats = null;
-        for (const buffer of [0.005, 0.01, 0.02, 0.05]) {
-            showProgress(5, `Buscando embalses (radio ${(buffer*111).toFixed(0)} km)...`);
-            const bbox = `${presaCoord[0]-buffer},${presaCoord[1]-buffer},${presaCoord[0]+buffer},${presaCoord[1]+buffer}`;
-            const resp = await fetch(`${OGC_EMBALSES}?f=application%2Fgeo%2Bjson&limit=${PAGE_LIMIT}&sortby=nombre&bbox=${bbox}`);
-            const candidates = resp.ok ? (await resp.json()).features || [] : [];
-            if (!candidates.length) continue;
-
-            const containing = candidates.filter(ef => {
-                try { return turf.booleanPointInPolygon(presaPt, ef); } catch { return false; }
-            });
-            if (containing.length) { embalseFeats = containing; break; }
-
-            let minDist = Infinity, closest = null;
-            for (const ef of candidates) {
-                try { const d = turf.pointToLineDistance(presaPt, turf.polygonToLine(ef), {units:"kilometers"}); if (d < minDist) { minDist = d; closest = ef; } } catch {}
-            }
-            if (closest && minDist < 2) { embalseFeats = [closest]; break; }
-        }
-
-        if (!embalseFeats || !embalseFeats.length) {
-            addResult(`\n\n<span class="r-info">No se encontro embalse asociado a esta presa.</span>`);
-            return;
-        }
-
-        const embName = embalseFeats[0].properties?.nombre || "desconocido";
-        addResult(`\n<span class="r-label">Embalse:</span> ${embName}`);
-
-        resultLayer.addData({ type:"FeatureCollection", features:embalseFeats });
-
-        addResult(`\n\n<span class="r-label">Analizando cauces y ARPSIs...</span>`);
-        await runCauceAnalysis(embalseFeats);
-
-    } catch(e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
-    finally { hideProgress(); document.getElementById("btn-presa").disabled=false; document.getElementById("btn-presa-analisis").disabled=false; }
-}
-
-// --- PRESAS ---
-const getPresaName = setupAutocomplete("inp-presa", "suggestions-presa", OGC_PRESAS, "nombre",
-    p => p.cauce ? `Cauce: ${p.cauce}` : null,
-    name => searchPresa(name)
-);
-
-async function searchPresa(name) {
-    if (!name) name = getPresaName();
-    if (!name) { setResult("Escriba un nombre de presa."); return; }
-    clearMap();
-    document.getElementById("info-banner").style.display = "none";
-    document.getElementById("btn-presa").disabled = true;
-    setResult(`<span class="r-info">Buscando presa "${name}"...</span>`);
-    try {
-        const filter = encodeURIComponent(`nombre = '${name}'`);
-        const resp = await fetch(`${OGC_PRESAS}?f=application%2Fgeo%2Bjson&limit=50&filter=${filter}&filter-lang=cql-text`);
-        if (!resp.ok) throw new Error(`API error: ${resp.status}`);
-        const data = await resp.json();
-        const feats = data.features || [];
-        if (!feats.length) { setResult(`<span class="r-info">No se encontro "${name}".</span>`); return; }
-        lastGeoJSON = { type:"FeatureCollection", features:feats };
-        resultLayer = L.geoJSON(lastGeoJSON, {
-            pointToLayer: (f,ll) => L.circleMarker(ll, { radius:8, fillColor:"#FF9800", color:"#E65100", weight:2, fillOpacity:0.8 }),
-            onEachFeature: (f,ly) => { const p=f.properties||{}; ly.bindPopup(`<b>${p.nombre||"-"}</b><br>Cauce: ${p.cauce||"-"}<br>Tipologia: ${p.tipologia||"-"}<br>Fase: ${p.fase||"-"}<br>Provincia: ${p.provincia||"-"}`); }
-        }).addTo(map);
-        map.fitBounds(resultLayer.getBounds().pad(0.3));
-        document.getElementById("dl-btn").disabled = false;
-        const p = feats[0].properties||{};
-        const cent = getCentroid(lastGeoJSON);
-        const demar = cent ? findDemarcacion(cent[0], cent[1]) : null;
-        document.getElementById("btn-presa-analisis").disabled = false;
-        document.getElementById("btn-aforo-presa").disabled = false;
-        setResult(`<span class="r-name">${p.nombre||name}</span>\n\n<span class="r-label">Demarcacion:</span> ${demar||"-"}\n<span class="r-label">Cauce:</span> ${p.cauce||"-"}\n<span class="r-label">Tipologia:</span> ${p.tipologia||"-"}\n<span class="r-label">Fase:</span> ${p.fase||"-"}\n<span class="r-label">CCAA:</span> ${p.ccaa||"-"}\n<span class="r-label">Provincia:</span> ${p.provincia||"-"}\n<span class="r-label">Resultados:</span> ${feats.length}`);
-    } catch(e) { setResult(`<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
-    finally { document.getElementById("btn-presa").disabled = false; }
 }
 
 // --- Download ---
@@ -1089,7 +979,7 @@ async function buscarDatosEmbalse() {
         const bb = resultLayer.getBounds();
         const pad = 0.01;
         const bboxStr = `${bb.getWest()-pad},${bb.getSouth()-pad},${bb.getEast()+pad},${bb.getNorth()+pad}`;
-        const searchName = lastGeoJSON?.features?.[0]?.properties?.nombre?.toUpperCase() || "";
+        const searchName = lastGeoJSON?.features?.[0]?.properties?.descripcion?.toUpperCase() || "";
 
         showProgress(15, "Buscando embalses...");
         let reservoirs = await argosWfs(ARGOS_PV, "reservoir_volume", bboxStr);
@@ -1201,7 +1091,7 @@ async function buscarSaihAguasArriba() {
         setTimeout(hideProgress, 600);
 
     } catch (e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
-    finally { hideProgress(); try{document.getElementById("btn-saih-arriba").disabled=false}catch{} try{document.getElementById("btn-saih-arriba-presa").disabled=false}catch{} }
+    finally { hideProgress(); document.getElementById("btn-saih-arriba").disabled = false; }
 }
 
 function openSaihDashboard() {
@@ -1325,7 +1215,7 @@ async function buscarSaihAguasAbajo() {
         setTimeout(hideProgress, 600);
 
     } catch (e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
-    finally { hideProgress(); try{document.getElementById("btn-saih-abajo").disabled=false}catch{} try{document.getElementById("btn-saih-abajo-presa").disabled=false}catch{} }
+    finally { hideProgress(); document.getElementById("btn-saih-abajo").disabled = false; }
 }
 
 </script>
