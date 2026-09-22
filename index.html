@@ -157,6 +157,7 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
     <div class="tab-bar">
         <button class="tab-btn active" onclick="switchTab('rios')">Rios</button>
         <button class="tab-btn" onclick="switchTab('embalses')">Embalses</button>
+        <button class="tab-btn" onclick="switchTab('cerca')">📍 Cerca de mi</button>
     </div>
 
     <div id="tab-rios" class="tab-content active">
@@ -181,6 +182,11 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
         <button class="action" id="btn-embalse-analisis" onclick="analizarEmbalse()" disabled style="margin-top:6px;background:linear-gradient(135deg,#1B5E20,#4CAF50);">Analizar cauces y ARPSIs</button>
         <button class="action" id="btn-saih-arriba" onclick="buscarSaihAguasArriba()" disabled style="margin-top:6px;background:linear-gradient(135deg,#00695C,#009688);">Estaciones SAIH aguas arriba</button>
         <button class="action" id="btn-saih-abajo" onclick="buscarSaihAguasAbajo()" disabled style="margin-top:6px;background:linear-gradient(135deg,#4A148C,#7B1FA2);">Estaciones SAIH aguas abajo</button>
+    </div>
+
+    <div id="tab-cerca" class="tab-content">
+        <p style="font-size:13px;color:#8892b0;margin-bottom:8px;">Obtenga su ubicacion y vea los rios y embalses mas proximos.</p>
+        <button class="action" id="btn-cerca" onclick="buscarCercanos()">📍 Usar mi ubicacion</button>
     </div>
 
     <div id="result-panel">
@@ -311,8 +317,19 @@ let lastDownstreamFeats = null;
 let lastUpstreamFeats = null;
 let lastGeoJSON = null;
 let lastRiverCodPfaf = null;
+let userMarker = null, userAccCircle = null, cercaLayer = null;
 function setResult(h) { document.getElementById("result-box").innerHTML = h; }
 function addResult(h) { document.getElementById("result-box").innerHTML += h; }
+function escapeHtml(s) { return String(s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+// Delegacion de click para los resultados de "Cerca de mi" (evita escapar
+// nombres con comillas dentro de atributos onclick)
+document.getElementById("result-box").addEventListener("click", e => {
+    const el = e.target.closest(".r-cerca-item");
+    if (!el) return;
+    const name = el.dataset.name, type = el.dataset.type;
+    if (type === "rio") { switchTab("rios"); searchRiver(name); }
+    else { switchTab("embalses"); searchEmbalse(name); }
+});
 function showProgress(pct, label) {
     const bar = document.getElementById("progress-bar");
     bar.style.display = "block";
@@ -325,6 +342,9 @@ function clearMap() {
     if (arpsiLayer) { map.removeLayer(arpsiLayer); arpsiLayer = null; }
     if (extraLayer) { map.removeLayer(extraLayer); extraLayer = null; }
     if (traceLayer) { map.removeLayer(traceLayer); traceLayer = null; }
+    if (cercaLayer) { map.removeLayer(cercaLayer); cercaLayer = null; }
+    if (userMarker) { map.removeLayer(userMarker); userMarker = null; }
+    if (userAccCircle) { map.removeLayer(userAccCircle); userAccCircle = null; }
     lastRiverCodPfaf = null;
     document.getElementById("btn-trazar").disabled = true;
     document.getElementById("btn-aforo-rio").disabled = true;
@@ -339,7 +359,7 @@ function clearMap() {
 }
 
 // --- Tabs ---
-const TAB_IDS = ["rios","embalses"];
+const TAB_IDS = ["rios","embalses","cerca"];
 function switchTab(id) {
     document.querySelectorAll(".tab-btn").forEach((b,i) => b.classList.toggle("active", TAB_IDS[i]===id));
     TAB_IDS.forEach(t => document.getElementById("tab-"+t).classList.toggle("active", t===id));
@@ -393,9 +413,15 @@ const getRioName = setupAutocomplete("inp-rio", "suggestions-rio", OGC_RIOS, "no
 );
 
 async function fetchBbox(apiUrl, bboxStr, limit) {
+    // El GeoServer de MITECO pagina con "startIndex", pero el pygeoapi del IGN
+    // (api-features.idee.es, usado para embalses) da 500 si recibe ese
+    // parametro -- solo acepta "offset". Detectado 2026-09-22 al reutilizar
+    // fetchBbox() para la busqueda por cercania (antes solo se llamaba con
+    // colecciones de MITECO).
+    const pageParam = apiUrl.includes("api-features.idee.es") ? "offset" : "startIndex";
     let all = [], si = 0;
     while (true) {
-        const resp = await fetch(`${apiUrl}?f=json&limit=${limit||PAGE_LIMIT}&startIndex=${si}&bbox=${bboxStr}`);
+        const resp = await fetch(`${apiUrl}?f=json&limit=${limit||PAGE_LIMIT}&${pageParam}=${si}&bbox=${bboxStr}`);
         if (!resp.ok) break;
         const d = await resp.json(), feats = d.features || [];
         all = all.concat(feats);
@@ -848,6 +874,103 @@ function downloadResult() {
     if (!lastGeoJSON) return;
     const blob = new Blob([JSON.stringify(lastGeoJSON, null, 2)], { type:"application/geo+json" });
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "resultado.geojson"; a.click();
+}
+
+// --- CERCA DE MI: geolocalizacion + rios/embalses mas proximos ---
+async function buscarCercanos() {
+    clearMap();
+    document.getElementById("info-banner").style.display = "none";
+    document.getElementById("btn-cerca").disabled = true;
+    setResult(`<span class="r-info">Obteniendo ubicacion...</span>`);
+    if (!navigator.geolocation) {
+        setResult(`<span style="color:#ff6b6b;">Su navegador no soporta geolocalizacion.</span>`);
+        document.getElementById("btn-cerca").disabled = false;
+        return;
+    }
+    navigator.geolocation.getCurrentPosition(async pos => {
+        try {
+            const lon = pos.coords.longitude, lat = pos.coords.latitude, acc = pos.coords.accuracy;
+            const userPt = turf.point([lon, lat]);
+            userMarker = L.marker([lat, lon]).addTo(map).bindPopup("Mi ubicacion").openPopup();
+            userAccCircle = L.circle([lat, lon], { radius: acc, color:"#64B5F6", fillOpacity:0.08, weight:1 }).addTo(map);
+            map.setView([lat, lon], 12);
+
+            setResult(`<span class="r-info">Buscando rios y embalses cercanos...</span>`);
+            showProgress(10, "Buscando en la zona...");
+
+            // Amplia el radio de busqueda si en la primera pasada no hay suficientes resultados
+            // (zonas rurales con pocos cauces/embalses cercanos)
+            let deg = 0.05, riverGroups = new Map(), embGroups = new Map();
+            for (let attempt = 0; attempt < 4; attempt++) {
+                const bbox = `${lon-deg},${lat-deg},${lon+deg},${lat+deg}`;
+                showProgress(10 + attempt*18, `Buscando en un radio de ~${Math.round(deg*111)} km...`);
+                const [riverFeats, embFeats] = await Promise.all([
+                    fetchBbox(OGC_RIOS, bbox, PAGE_LIMIT),
+                    fetchBbox(OGC_EMBALSES, bbox, 200)
+                ]);
+                riverGroups = new Map();
+                riverFeats.forEach(f => {
+                    const name = f.properties?.nom_rio; if (!name) return;
+                    let d; try { d = turf.pointToLineDistance(userPt, f, {units:"kilometers"}); } catch { return; }
+                    if (!riverGroups.has(name) || d < riverGroups.get(name).d) riverGroups.set(name, {d, feat:f});
+                });
+                embGroups = new Map();
+                embFeats.forEach(f => {
+                    const name = f.properties?.nombre; if (!name) return;
+                    let d;
+                    try {
+                        d = turf.booleanPointInPolygon(userPt, f) ? 0 : turf.pointToLineDistance(userPt, turf.polygonToLine(f), {units:"kilometers"});
+                    } catch { return; }
+                    if (!embGroups.has(name) || d < embGroups.get(name).d) embGroups.set(name, {d, feat:f});
+                });
+                if (riverGroups.size >= 5 && embGroups.size >= 3) break;
+                deg *= 2.2;
+            }
+            hideProgress();
+
+            const rivers = [...riverGroups.entries()].sort((a,b) => a[1].d - b[1].d).slice(0, 6);
+            const embalses = [...embGroups.entries()].sort((a,b) => a[1].d - b[1].d).slice(0, 6);
+
+            if (!rivers.length && !embalses.length) {
+                setResult(`<span class="r-info">No se encontraron rios ni embalses en un radio de ~${Math.round(deg*111)} km.</span>`);
+                return;
+            }
+
+            let html = `<span class="r-name">Cerca de su ubicacion</span>\n<span class="r-info">lon=${lon.toFixed(5)}, lat=${lat.toFixed(5)} (precision ~${Math.round(acc)} m)</span>\n`;
+            if (rivers.length) {
+                html += `\n<span class="r-label">Rios mas proximos (click para ver detalle):</span>`;
+                rivers.forEach(([name, {d}]) => {
+                    html += `\n<span class="r-cerca-item" data-type="rio" data-name="${escapeHtml(name)}" style="cursor:pointer;color:#00BCD4;text-decoration:underline;">${name}</span> <span class="r-info">(${d.toFixed(1)} km)</span>`;
+                });
+            }
+            if (embalses.length) {
+                html += `\n\n<span class="r-label">Embalses mas proximos (click para ver detalle):</span>`;
+                embalses.forEach(([name, {d}]) => {
+                    html += `\n<span class="r-cerca-item" data-type="embalse" data-name="${escapeHtml(name)}" style="cursor:pointer;color:#2196F3;text-decoration:underline;">${name}</span> <span class="r-info">(${d===0?"aqui mismo":d.toFixed(1)+" km"})</span>`;
+                });
+            }
+            setResult(html);
+
+            // Vista previa en el mapa (lineas/poligonos finos) sin necesidad de hacer click.
+            // No se hace fitBounds a todos los resultados: el mas lejano puede estar a
+            // bastantes km y dejaria el mapa demasiado alejado para ver los mas cercanos
+            // (que son los relevantes de un vistazo). Se mantiene el zoom fijo sobre la
+            // ubicacion del usuario; cada item sigue siendo clicable para ir a el.
+            cercaLayer = L.layerGroup().addTo(map);
+            rivers.forEach(([name, {feat}], i) => {
+                L.geoJSON(feat, { style:{ color:"#00BCD4", weight: i===0?3:2, opacity:0.7, dashArray: i===0?null:"4 4" } }).addTo(cercaLayer);
+            });
+            embalses.forEach(([name, {feat}]) => {
+                L.geoJSON(feat, { style:{ color:"#2196F3", weight:1.5, fillColor:"#2196F3", fillOpacity:0.25 } }).addTo(cercaLayer);
+            });
+
+        } catch (e) { setResult(`<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
+        finally { hideProgress(); document.getElementById("btn-cerca").disabled = false; }
+    }, err => {
+        const m = {1:"Permiso denegado.",2:"Ubicacion no disponible.",3:"Tiempo agotado."};
+        setResult(`<span style="color:#ff6b6b;">${m[err.code]||"Error."}</span>`);
+        document.getElementById("btn-cerca").disabled = false;
+    }, { enableHighAccuracy:true, timeout:15000 });
 }
 
 // --- Argos Hydro: estaciones de aforo y embalses ---
