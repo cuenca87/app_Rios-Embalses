@@ -207,6 +207,31 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
 </div>
 
 <script>
+// --- Proxy CORS para la OGC API de MITECO ---
+// MITECO dejo de enviar cabeceras CORS: el servidor responde, pero el navegador
+// no deja leer la respuesta desde github.io ("Load failed"). Se intenta primero
+// la llamada directa; si falla por red/CORS, se pasa (y se queda) en el proxy
+// de Cloudflare (proxy/miteco-ogc-worker.js). Si MITECO restablece CORS, la
+// llamada directa vuelve a funcionar sin tocar nada.
+const MITECO_OGC_BASE = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/";
+const MITECO_PROXY = "https://miteco-ogc-proxy.riosyembalses.workers.dev/";
+let mitecoViaProxy = false;
+const _fetchOriginal = window.fetch.bind(window);
+window.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input?.url;
+    if (!MITECO_PROXY || !url || !url.startsWith(MITECO_OGC_BASE)) return _fetchOriginal(input, init);
+    const viaProxy = () => _fetchOriginal(MITECO_PROXY + url.slice(MITECO_OGC_BASE.length), init);
+    if (mitecoViaProxy) return viaProxy();
+    try {
+        return await _fetchOriginal(input, init);
+    } catch (e) {
+        if (!(e instanceof TypeError)) throw e;
+        mitecoViaProxy = true;
+        console.warn("MITECO sin CORS: se usa el proxy", MITECO_PROXY);
+        return viaProxy();
+    }
+};
+
 if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js").catch(() => {});
 }
