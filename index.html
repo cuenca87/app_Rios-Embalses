@@ -954,14 +954,22 @@ async function buscarCercanos() {
 
             // Amplia el radio de busqueda si en la primera pasada no hay suficientes resultados
             // (zonas rurales con pocos cauces/embalses cercanos)
+            // Rios (MITECO) y embalses (IGN) son servicios distintos: si uno falla,
+            // se sigue con el otro y se avisa, en vez de abortar toda la busqueda.
             let deg = 0.05, riverGroups = new Map(), embGroups = new Map();
+            const fallos = new Set();
             for (let attempt = 0; attempt < 4; attempt++) {
                 const bbox = `${lon-deg},${lat-deg},${lon+deg},${lat+deg}`;
                 showProgress(10 + attempt*18, `Buscando en un radio de ~${Math.round(deg*111)} km...`);
-                const [riverFeats, embFeats] = await Promise.all([
+                const [rRios, rEmb] = await Promise.allSettled([
                     fetchBbox(OGC_RIOS, bbox, PAGE_LIMIT),
                     fetchBbox(OGC_EMBALSES, bbox, 200)
                 ]);
+                if (rRios.status === "rejected") { fallos.add("rios (MITECO)"); console.error("Cerca de mi - rios:", rRios.reason); }
+                if (rEmb.status === "rejected") { fallos.add("embalses (IGN)"); console.error("Cerca de mi - embalses:", rEmb.reason); }
+                if (fallos.size === 2) throw new Error("No responden los servicios de rios ni de embalses. Intentelo de nuevo en unos minutos.");
+                const riverFeats = rRios.status === "fulfilled" ? rRios.value : [];
+                const embFeats = rEmb.status === "fulfilled" ? rEmb.value : [];
                 riverGroups = new Map();
                 riverFeats.forEach(f => {
                     const name = f.properties?.nom_rio; if (!name) return;
@@ -977,7 +985,9 @@ async function buscarCercanos() {
                     } catch { return; }
                     if (!embGroups.has(name) || d < embGroups.get(name).d) embGroups.set(name, {d, feat:f});
                 });
-                if (riverGroups.size >= 5 && embGroups.size >= 3) break;
+                const okRios = fallos.has("rios (MITECO)") || riverGroups.size >= 5;
+                const okEmb = fallos.has("embalses (IGN)") || embGroups.size >= 3;
+                if (okRios && okEmb) break;
                 deg *= 2.2;
             }
             hideProgress();
@@ -991,6 +1001,7 @@ async function buscarCercanos() {
             }
 
             let html = `<span class="r-name">Cerca de su ubicacion</span>\n<span class="r-info">lon=${lon.toFixed(5)}, lat=${lat.toFixed(5)} (precision ~${Math.round(acc)} m)</span>\n`;
+            if (fallos.size) html += `\n<span style="color:#ffb74d;">Aviso: no ha respondido el servicio de ${[...fallos].join(" ni el de ")}; se muestran solo los resultados disponibles.</span>\n`;
             if (rivers.length) {
                 html += `\n<span class="r-label">Rios mas proximos (click para ver detalle):</span>`;
                 rivers.forEach(([name, {d}]) => {

@@ -1,4 +1,4 @@
-const CACHE_NAME = "rios-visor-v5";
+const CACHE_NAME = "rios-visor-v6";
 const ASSETS = [
   "./index.html",
   "./icon.svg",
@@ -38,10 +38,11 @@ self.addEventListener("fetch", (e) => {
   if (req.method !== "GET") return;
   const url = new URL(req.url);
 
-  if (LIVE_HOSTS.some((h) => url.hostname.endsWith(h))) {
-    e.respondWith(fetch(req));
-    return;
-  }
+  // Servicios de datos: no se interceptan (sin respondWith) y los gestiona el
+  // navegador directamente. Envolverlos en respondWith(fetch()) hacia que, si
+  // el servidor fallaba, Safari mostrara "FetchEvent.respondWith received an
+  // error: TypeError: Load failed" en lugar del error real.
+  if (LIVE_HOSTS.some((h) => url.hostname.endsWith(h))) return;
 
   // HTML: red primero (para que los cambios publicados lleguen siempre),
   // con la copia en cache solo como respaldo sin conexion.
