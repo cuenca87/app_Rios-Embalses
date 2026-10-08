@@ -1,10 +1,20 @@
-const CACHE_NAME = "rios-visor-v4";
+const CACHE_NAME = "rios-visor-v5";
 const ASSETS = [
   "./index.html",
   "./icon.svg",
   "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css",
   "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js",
   "https://unpkg.com/@turf/turf@7/turf.min.js"
+];
+
+// Servicios de datos y mapas: siempre a red, nunca desde cache.
+const LIVE_HOSTS = [
+  "miteco.gob.es",
+  "mapama.gob.es",
+  "idee.es",
+  "ign.es",
+  "workers.dev",
+  "tile.openstreetmap.org"
 ];
 
 self.addEventListener("install", (e) => {
@@ -24,13 +34,30 @@ self.addEventListener("activate", (e) => {
 });
 
 self.addEventListener("fetch", (e) => {
-  if (e.request.url.includes("mapama.gob.es") ||
-      e.request.url.includes("idee.es") ||
-      e.request.url.includes("ign.es/wm")) {
-    e.respondWith(fetch(e.request));
+  const req = e.request;
+  if (req.method !== "GET") return;
+  const url = new URL(req.url);
+
+  if (LIVE_HOSTS.some((h) => url.hostname.endsWith(h))) {
+    e.respondWith(fetch(req));
     return;
   }
-  e.respondWith(
-    caches.match(e.request).then((cached) => cached || fetch(e.request))
-  );
+
+  // HTML: red primero (para que los cambios publicados lleguen siempre),
+  // con la copia en cache solo como respaldo sin conexion.
+  if (req.mode === "navigate" || url.pathname.endsWith(".html")) {
+    e.respondWith(
+      fetch(req)
+        .then((resp) => {
+          const copy = resp.clone();
+          caches.open(CACHE_NAME).then((c) => c.put(req, copy));
+          return resp;
+        })
+        .catch(() => caches.match(req).then((r) => r || caches.match("./index.html")))
+    );
+    return;
+  }
+
+  // Librerias e iconos: cache primero.
+  e.respondWith(caches.match(req).then((cached) => cached || fetch(req)));
 });

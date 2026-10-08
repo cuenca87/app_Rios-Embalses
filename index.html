@@ -211,7 +211,9 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js").catch(() => {});
 }
 
-const OGC_RIOS = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:rios_comp_pfaf1/items";
+// MITECO renombró la colección: agua:rios_comp_pfaf1 -> agua:rios_comp_pfaf.
+// Con el nombre antiguo el GeoServer devuelve error y no se carga ningún río.
+const OGC_RIOS = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:rios_comp_pfaf/items";
 const OGC_ARPSI = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:Zi_arpsi/items";
 // MITECO dejó de publicar el catálogo de embalses (eGISPE_Embalses) en su OGC API.
 // La red SAIH (agua:embalses_et) resultó ser un mal sustituto: solo 848 puntos y sin
