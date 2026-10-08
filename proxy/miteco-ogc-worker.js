@@ -1,13 +1,20 @@
-// Cloudflare Worker: proxy CORS de solo lectura para la OGC API Features de MITECO.
+// Cloudflare Worker: proxy CORS de solo lectura para el GeoServer de MITECO.
 //
-// Uso desde la app:
-//   https://<worker>.workers.dev/collections/agua:rios_comp_pfaf/items?f=json&limit=1
-//   -> https://gis.miteco.gob.es/geoserver/ogc/features/v1/collections/agua:rios_comp_pfaf/items?f=json&limit=1
+// MITECO dejo de enviar cabeceras CORS, asi que las apps de cuenca87.github.io
+// no pueden leer sus respuestas con fetch(). Este worker reenvia las llamadas
+// y anade esas cabeceras. Rutas admitidas (relativas a /geoserver/):
 //
-// Solo reenvia peticiones GET a esa API (no es un proxy abierto) y solo
-// acepta llamadas desde los origenes de ALLOWED_ORIGINS.
+//   collections/...              -> ogc/features/v1/collections/...  (OGC API Features;
+//                                   forma corta usada por app_Rios-Embalses e incendios-2026)
+//   ogc/features/v1/...          -> igual, forma completa
+//   wms?...request=GetFeatureInfo           -> consultas puntuales WMS
+//   gwc/service/wmts?...request=GetFeatureInfo -> consultas puntuales WMTS
+//
+// Solo GET, solo esas rutas (no es un proxy abierto) y solo desde ALLOWED_ORIGINS.
+// Los mosaicos de imagen (GetMap/GetTile) NO pasan por aqui: las imagenes no
+// estan sujetas a CORS y se piden directamente a MITECO.
 
-const UPSTREAM = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/";
+const UPSTREAM = "https://gis.miteco.gob.es/geoserver/";
 
 const ALLOWED_ORIGINS = [
   "https://cuenca87.github.io",
@@ -15,8 +22,7 @@ const ALLOWED_ORIGINS = [
   "http://127.0.0.1:8000",
 ];
 
-// Los datos de referencia (rios, ARPSI, demarcaciones) cambian muy poco:
-// cachear una hora en el borde de Cloudflare aligera mucho las busquedas.
+// Los datos de referencia cambian muy poco: cache de una hora en el borde.
 const CACHE_SECONDS = 3600;
 
 function corsHeaders(origin) {
@@ -27,6 +33,15 @@ function corsHeaders(origin) {
     "Access-Control-Max-Age": "86400",
     "Vary": "Origin",
   };
+}
+
+// Devuelve la ruta en el GeoServer de MITECO, o null si no esta permitida.
+function rutaPermitida(path, params) {
+  if (path.startsWith("collections")) return "ogc/features/v1/" + path;
+  if (path.startsWith("ogc/features/v1/")) return path;
+  const req = (params.get("request") || params.get("REQUEST") || "").toLowerCase();
+  if ((path === "wms" || path === "gwc/service/wmts") && req === "getfeatureinfo") return path;
+  return null;
 }
 
 export default {
@@ -45,11 +60,11 @@ export default {
     }
 
     const url = new URL(request.url);
-    const path = url.pathname.replace(/^\/+/, "");
-    if (!path.startsWith("collections")) {
+    const ruta = rutaPermitida(url.pathname.replace(/^\/+/, ""), url.searchParams);
+    if (!ruta) {
       return new Response("Ruta no permitida", { status: 404 });
     }
-    const target = UPSTREAM + path + url.search;
+    const target = UPSTREAM + ruta + url.search;
 
     // Cache en el borde (clave = URL de MITECO, independiente del origen)
     const cache = caches.default;
@@ -57,7 +72,7 @@ export default {
     let upstream = await cache.match(cacheKey);
 
     if (!upstream) {
-      upstream = await fetch(target, { headers: { Accept: "application/json" } });
+      upstream = await fetch(target);
       if (upstream.ok) {
         const toCache = new Response(upstream.body, upstream);
         toCache.headers.set("Cache-Control", `public, max-age=${CACHE_SECONDS}`);
