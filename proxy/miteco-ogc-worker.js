@@ -9,6 +9,9 @@
 //   ogc/features/v1/...          -> igual, forma completa
 //   wms?...request=GetFeatureInfo           -> consultas puntuales WMS
 //   gwc/service/wmts?...request=GetFeatureInfo -> consultas puntuales WMTS
+//   agua/wfs?...request=GetFeature           -> consultas WFS del workspace agua
+//                                   (permite pedir solo atributos con propertyName;
+//                                   lo usa la cuenca vertiente de app_Rios-Embalses)
 //
 // Solo GET, solo esas rutas (no es un proxy abierto) y solo desde ALLOWED_ORIGINS.
 // Los mosaicos de imagen (GetMap/GetTile) NO pasan por aqui: las imagenes no
@@ -41,6 +44,7 @@ function rutaPermitida(path, params) {
   if (path.startsWith("ogc/features/v1/")) return path;
   const req = (params.get("request") || params.get("REQUEST") || "").toLowerCase();
   if ((path === "wms" || path === "gwc/service/wmts") && req === "getfeatureinfo") return path;
+  if (path === "agua/wfs" && req === "getfeature") return path;
   return null;
 }
 

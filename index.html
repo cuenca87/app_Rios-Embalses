@@ -82,6 +82,7 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
 .dl-btn:disabled { opacity:.3; cursor:not-allowed; }
 
 #map { flex:1; }
+#map.picking, #map.picking .leaflet-interactive { cursor:crosshair; }
 .saih-label{background:rgba(22,33,62,.85)!important;border:1px solid #0f3460!important;color:#e0e0e0!important;font-size:10px!important;font-weight:600!important;padding:2px 6px!important;border-radius:4px!important;box-shadow:0 1px 3px rgba(0,0,0,.3)!important}
 .saih-label::before{border-right-color:rgba(22,33,62,.85)!important}
 
@@ -158,6 +159,7 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
         <button class="tab-btn active" onclick="switchTab('rios')">Rios</button>
         <button class="tab-btn" onclick="switchTab('embalses')">Embalses</button>
         <button class="tab-btn" onclick="switchTab('cerca')">📍 Cerca de mi</button>
+        <button class="tab-btn" onclick="switchTab('cuenca')">💧 Cuenca</button>
     </div>
 
     <div id="tab-rios" class="tab-content active">
@@ -170,6 +172,7 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
         <button class="action" id="btn-trazar" onclick="trazarAlMar()" disabled style="margin-top:6px;background:linear-gradient(135deg,#1B5E20,#4CAF50);">Trazar recorrido al mar</button>
         <button class="action" id="btn-arpsi-rio" onclick="buscarArpsis('btn-arpsi-rio')" disabled style="margin-top:6px;background:linear-gradient(135deg,#E65100,#FF9800);">Buscar ARPSIs</button>
         <button class="action" id="btn-aforo-rio" onclick="buscarAforos('rio')" disabled style="margin-top:6px;background:linear-gradient(135deg,#0D47A1,#2196F3);">Consulta estaciones SAIH</button>
+        <button class="action" id="btn-cuenca-rio" onclick="cuencaRioCompleto()" disabled style="margin-top:6px;background:linear-gradient(135deg,#006064,#00ACC1);">Cuenca vertiente del rio</button>
     </div>
 
     <div id="tab-embalses" class="tab-content">
@@ -184,11 +187,20 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
         <button class="action" id="btn-arpsi-embalse" onclick="buscarArpsis('btn-arpsi-embalse')" disabled style="margin-top:6px;background:linear-gradient(135deg,#E65100,#FF9800);">Buscar ARPSIs</button>
         <button class="action" id="btn-saih-arriba" onclick="buscarSaihAguasArriba()" disabled style="margin-top:6px;background:linear-gradient(135deg,#00695C,#009688);">Estaciones SAIH aguas arriba</button>
         <button class="action" id="btn-saih-abajo" onclick="buscarSaihAguasAbajo()" disabled style="margin-top:6px;background:linear-gradient(135deg,#4A148C,#7B1FA2);">Estaciones SAIH aguas abajo</button>
+        <button class="action" id="btn-cuenca-embalse" onclick="cuencaEmbalse()" disabled style="margin-top:6px;background:linear-gradient(135deg,#006064,#00ACC1);">Cuenca vertiente del embalse</button>
     </div>
 
     <div id="tab-cerca" class="tab-content">
         <p style="font-size:13px;color:#8892b0;margin-bottom:8px;">Obtenga su ubicacion y vea los rios y embalses mas proximos.</p>
         <button class="action" id="btn-cerca" onclick="buscarCercanos()">📍 Usar mi ubicacion</button>
+    </div>
+
+    <div id="tab-cuenca" class="tab-content">
+        <p style="font-size:13px;color:#8892b0;margin-bottom:8px;">Pulse un punto sobre un cauce y se calcula la superficie que drena hasta él.</p>
+        <button class="action" id="btn-cuenca-punto" onclick="activarPuntoCuenca()" style="background:linear-gradient(135deg,#006064,#00ACC1);">Marcar punto en el mapa</button>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;color:#8892b0;cursor:pointer;">
+            <input type="checkbox" id="chk-cuenca-mdt" checked> Cortar el tramo en el punto con el MDT de 5 m del IGN
+        </label>
     </div>
 
     <div id="result-panel">
@@ -215,12 +227,20 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
 // llamada directa vuelve a funcionar sin tocar nada.
 const MITECO_OGC_BASE = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/";
 const MITECO_PROXY = "https://miteco-ogc-proxy.riosyembalses.workers.dev/";
+// WFS del workspace agua (cuenca vertiente: permite pedir solo atributos)
+const MITECO_WFS = "https://gis.miteco.gob.es/geoserver/agua/wfs";
 let mitecoViaProxy = false;
 const _fetchOriginal = window.fetch.bind(window);
+function mitecoRutaProxy(url) {
+    if (url.startsWith(MITECO_OGC_BASE)) return MITECO_PROXY + url.slice(MITECO_OGC_BASE.length);
+    if (url.startsWith(MITECO_WFS + "?")) return MITECO_PROXY + "agua/wfs" + url.slice(MITECO_WFS.length);
+    return null;
+}
 window.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input?.url;
-    if (!MITECO_PROXY || !url || !url.startsWith(MITECO_OGC_BASE)) return _fetchOriginal(input, init);
-    const viaProxy = () => _fetchOriginal(MITECO_PROXY + url.slice(MITECO_OGC_BASE.length), init);
+    const proxyUrl = MITECO_PROXY && url ? mitecoRutaProxy(url) : null;
+    if (!proxyUrl) return _fetchOriginal(input, init);
+    const viaProxy = () => _fetchOriginal(proxyUrl, init);
     if (mitecoViaProxy) return viaProxy();
     try {
         return await _fetchOriginal(input, init);
@@ -418,7 +438,10 @@ function clearMap() {
     if (cercaLayer) { map.removeLayer(cercaLayer); cercaLayer = null; }
     if (userMarker) { map.removeLayer(userMarker); userMarker = null; }
     if (userAccCircle) { map.removeLayer(userAccCircle); userAccCircle = null; }
+    quitarCapaCuenca();
     lastRiverCodPfaf = null;
+    document.getElementById("btn-cuenca-rio").disabled = true;
+    document.getElementById("btn-cuenca-embalse").disabled = true;
     document.getElementById("btn-trazar").disabled = true;
     document.getElementById("btn-aforo-rio").disabled = true;
     document.getElementById("btn-aforo-embalse").disabled = true;
@@ -434,7 +457,7 @@ function clearMap() {
 }
 
 // --- Tabs ---
-const TAB_IDS = ["rios","embalses","cerca"];
+const TAB_IDS = ["rios","embalses","cerca","cuenca"];
 function switchTab(id) {
     document.querySelectorAll(".tab-btn").forEach((b,i) => b.classList.toggle("active", TAB_IDS[i]===id));
     TAB_IDS.forEach(t => document.getElementById("tab-"+t).classList.toggle("active", t===id));
@@ -549,7 +572,7 @@ async function searchRiver(name, nearPt) {
         const cent = getCentroid(lastGeoJSON);
         const demar = cent ? findDemarcacion(cent[0], cent[1]) : null;
         lastRiverCodPfaf = p.cod_pfafrio || null;
-        if (lastRiverCodPfaf) { document.getElementById("btn-trazar").disabled = false; document.getElementById("btn-aforo-rio").disabled = false; }
+        if (lastRiverCodPfaf) { document.getElementById("btn-trazar").disabled = false; document.getElementById("btn-aforo-rio").disabled = false; document.getElementById("btn-cuenca-rio").disabled = false; }
         document.getElementById("btn-arpsi-rio").disabled = false;
         setResult(`<span class="r-name">${p.nom_rio||name}</span>${nearNote}\n\n<span class="r-label">Longitud:</span> ${p.long_rio_m?(p.long_rio_m/1000).toFixed(1):"-"} km\n<span class="r-label">Pfafstetter:</span> ${p.cod_pfafrio||"-"}\n<span class="r-label">Demarcacion:</span> ${demar||"-"}\n<span class="r-label">Segmentos:</span> ${all.length}`);
 
@@ -802,6 +825,7 @@ async function searchEmbalse(name, nearPt) {
         document.getElementById("btn-embalse-analisis").disabled = false;
         document.getElementById("btn-aforo-embalse").disabled = false;
         document.getElementById("btn-arpsi-embalse").disabled = false;
+        document.getElementById("btn-cuenca-embalse").disabled = false;
         const p = seedFeat.properties||{};
         setResult(`<span class="r-name">${p.nombre||name}</span>${nearNote}\n\n<span class="r-label">Demarcacion:</span> ${p.id_demarcd||"-"}\n<span class="r-label">Tipo:</span> ${p.tipo_aestd||"-"} (${p.origend||"-"})\n<span class="r-label">Elevacion:</span> ${p.elevacion!=null?p.elevacion+" m":"-"}\n<span class="r-label">Superficie:</span> ${p.area?(p.area/10000).toFixed(1)+" ha":"-"}`);
     } catch(e) { setResult(`<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
@@ -945,6 +969,537 @@ async function analizarEmbalse() {
         await runCauceAnalysis(lastEmbalseFeats);
     } catch(e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
     finally { hideProgress(); document.getElementById("btn-embalse").disabled=false; document.getElementById("btn-embalse-analisis").disabled=false; }
+}
+
+// --- CUENCA VERTIENTE ---
+// La cuenca se compone con las subcuencas por tramo de rio de MITECO
+// (agua:subcuencas_pfaf_cx, Pfafstetter modificado): todo lo que hay aguas
+// arriba del tramo del punto se deduce de los codigos, sin geometria. El propio
+// tramo se corta en el punto con el MDT de 5 m del IGN (WCS, con CORS abierto).
+// Comprobado contra el aforo del Ebro en Zaragoza: 40.901 km2 frente a 40.434.
+const MITECO_WMS = "https://gis.miteco.gob.es/geoserver/agua/wms";
+const OGC_CUENCA_RIO = MITECO_OGC_BASE + "collections/agua:subcuencas_rios_comp_pfaf/items";
+const IGN_WCS_MDT = "https://servicios.idee.es/wcs-inspire/mdt";
+const CUENCA_GEOM_MAX = 800;     // por encima, el contorno se dibuja con el WMS de MITECO
+const MDT_MAX_CELDAS = 4e6;      // 5 m hasta ~100 km2 de tramo; si no, 25 m
+const ATRIB_UNIDAD = "cod_pfafcuen,cod_pfafrio,nom_rio,area_ctr_km2,area_cu_km2,cota_max,cota_min,cota_med";
+let cuencaLayer = null, cuencaWms = null, cuencaPicking = false;
+
+function quitarCapaCuenca() {
+    if (cuencaLayer) { map.removeLayer(cuencaLayer); cuencaLayer = null; }
+    if (cuencaWms) { map.removeLayer(cuencaWms); cuencaWms = null; }
+}
+
+function cargarScript(src) {
+    return new Promise((ok, ko) => {
+        const s = document.createElement("script");
+        s.src = src; s.onload = ok; s.onerror = () => ko(new Error("No se pudo cargar " + src));
+        document.head.appendChild(s);
+    });
+}
+let libsMdt = null;
+function cargarLibsMdt() {
+    libsMdt = libsMdt || Promise.all([
+        cargarScript("https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.11.0/proj4.js"),
+        cargarScript("https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js")
+    ]).then(() => proj4.defs("EPSG:25830", "+proj=utm +zone=30 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs"));
+    libsMdt.catch(() => { libsMdt = null; });
+    return libsMdt;
+}
+
+// Pfafstetter: una unidad B esta aguas arriba de A si, en el primer digito en
+// que difieren, el de B es mayor y desde ahi todos los de A son impares (A va
+// por el cauce principal). Se traduce a rangos de texto sobre cod_pfafcuen.
+function pfafCqlAguasArriba(code) {
+    let k = code.length;
+    while (k > 0 && +code[k - 1] % 2 === 1) k--;
+    const terms = [];
+    for (let i = k; i < code.length; i++) {
+        if (code[i] === "9") continue;
+        const pre = code.slice(0, i);
+        terms.push(`cod_pfafcuen BETWEEN '${pre}${+code[i] + 1}' AND '${pre}9999999999999999999'`);
+    }
+    return terms.length ? terms.join(" OR ") : null;
+}
+function pfafEstaAguasArriba(b, a) {
+    let i = 0;
+    while (i < a.length && i < b.length && a[i] === b[i]) i++;
+    if (i >= a.length || i >= b.length || +b[i] <= +a[i]) return false;
+    for (let j = i; j < a.length; j++) if (+a[j] % 2 === 0) return false;
+    return true;
+}
+
+async function wfsUnidades(cql, conGeom) {
+    const p = new URLSearchParams({
+        service: "WFS", version: "1.0.0", request: "GetFeature", typeName: "agua:subcuencas_pfaf_cx",
+        outputFormat: "application/json", srsName: "EPSG:4326",
+        propertyName: ATRIB_UNIDAD + (conGeom ? ",shape" : ""), CQL_FILTER: cql
+    });
+    const resp = await fetch(`${MITECO_WFS}?${p}`);
+    if (!resp.ok) throw new Error(`WFS de MITECO: ${resp.status}`);
+    const d = await resp.json();
+    (d.features || []).forEach(f => { if (f.properties.nom_rio) f.properties.nom_rio = f.properties.nom_rio.trim(); });
+    return d.features || [];
+}
+
+function lineasDe(f) {
+    const g = f.geometry;
+    return g.type === "MultiLineString" ? g.coordinates.map(c => turf.lineString(c)) : [turf.lineString(g.coordinates)];
+}
+async function tramoMasCercano(lon, lat) {
+    const d = 0.006;
+    const feats = await fetchBbox(OGC_SUBTRAMOS, `${lon - d},${lat - d},${lon + d},${lat + d}`, PAGE_LIMIT);
+    const pt = turf.point([lon, lat]);
+    let best = null, bestD = Infinity;
+    for (const f of feats) {
+        if (!f.properties?.cod_pfafcuen || !f.geometry) continue;
+        for (const l of lineasDe(f)) {
+            const dk = turf.pointToLineDistance(pt, l, { units: "kilometers" });
+            if (dk < bestD) { bestD = dk; best = f; }
+        }
+    }
+    return best && bestD <= 0.6 ? { tramo: best, distKm: bestD } : null;
+}
+
+// --- MDT: corte del tramo en el punto ---
+class MonticuloMin {   // cola de prioridad (cota, orden de llegada) para el priority-flood
+    constructor() { this.z = []; this.s = []; this.i = []; }
+    get size() { return this.i.length; }
+    _menor(a, b) { return this.z[a] < this.z[b] || (this.z[a] === this.z[b] && this.s[a] < this.s[b]); }
+    _swap(a, b) { [this.z[a], this.z[b]] = [this.z[b], this.z[a]]; [this.s[a], this.s[b]] = [this.s[b], this.s[a]]; [this.i[a], this.i[b]] = [this.i[b], this.i[a]]; }
+    push(z, s, i) {
+        this.z.push(z); this.s.push(s); this.i.push(i);
+        let c = this.i.length - 1;
+        while (c > 0) { const p = (c - 1) >> 1; if (!this._menor(c, p)) break; this._swap(c, p); c = p; }
+    }
+    pop() {
+        const top = [this.z[0], this.i[0]], n = this.i.length - 1;
+        this._swap(0, n); this.z.pop(); this.s.pop(); this.i.pop();
+        let c = 0;
+        while (true) {
+            const l = 2 * c + 1, r = l + 1; let m = c;
+            if (l < n && this._menor(l, m)) m = l;
+            if (r < n && this._menor(r, m)) m = r;
+            if (m === c) break;
+            this._swap(c, m); c = m;
+        }
+        return top;
+    }
+}
+
+async function leerMdt(x0, y0, x1, y1, cell) {
+    const cov = cell === 5 ? "Elevacion25830_5" : "Elevacion25830_25";
+    const W = Math.round((x1 - x0) / cell), H = Math.round((y1 - y0) / cell);
+    const dem = new Float32Array(W * H).fill(NaN);
+    const T = 1000 * cell, jobs = [];
+    for (let tx = x0; tx < x1; tx += T) for (let ty = y0; ty < y1; ty += T) jobs.push([tx, ty, Math.min(tx + T, x1), Math.min(ty + T, y1)]);
+    await Promise.all(jobs.map(async ([a, b, c, d]) => {
+        const url = `${IGN_WCS_MDT}?SERVICE=WCS&VERSION=2.0.1&REQUEST=GetCoverage&COVERAGEID=${cov}&SUBSET=x(${a},${c})&SUBSET=y(${b},${d})&FORMAT=image/tiff`;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`MDT del IGN: ${resp.status}`);
+        const img = await (await GeoTIFF.fromArrayBuffer(await resp.arrayBuffer())).getImage();
+        const [ox, oy] = img.getOrigin(), [rx, ry] = img.getResolution();
+        const w = img.getWidth(), h = img.getHeight(), nd = img.getGDALNoData();
+        const ras = await img.readRasters({ interleave: true });
+        for (let r = 0; r < h; r++) {
+            const R = Math.floor((y1 - (oy + (r + 0.5) * ry)) / cell);
+            if (R < 0 || R >= H) continue;
+            for (let k = 0; k < w; k++) {
+                const C = Math.floor((ox + (k + 0.5) * rx - x0) / cell);
+                const v = ras[r * w + k];
+                if (C >= 0 && C < W && v !== nd && v > -1000) dem[R * W + C] = v;
+            }
+        }
+    }));
+    return { dem, W, H };
+}
+
+function anillosDe(geom) {
+    return geom.type === "Polygon" ? geom.coordinates : geom.type === "MultiPolygon" ? geom.coordinates.flat() : [];
+}
+
+// Contorno exacto de un conjunto de celdas: aristas de borde encadenadas.
+function poligonizar(sel, W, H, x0, y1, cell, aLonLat) {
+    const salidas = new Map();
+    const add = (a, b) => { if (!salidas.has(a)) salidas.set(a, []); salidas.get(a).push(b); };
+    const V = W + 1, en = i => sel[i] === 1;
+    for (let i = 0; i < W * H; i++) {
+        if (!en(i)) continue;
+        const r = (i / W) | 0, c = i % W;
+        const tl = r * V + c, tr = tl + 1, bl = tl + V, br = bl + 1;
+        if (r === 0 || !en(i - W)) add(tl, tr);
+        if (c === W - 1 || !en(i + 1)) add(tr, br);
+        if (r === H - 1 || !en(i + W)) add(br, bl);
+        if (c === 0 || !en(i - 1)) add(bl, tl);
+    }
+    const anillos = [];
+    for (const [ini] of salidas) {
+        while (salidas.get(ini)?.length) {
+            const ring = [ini];
+            let v = salidas.get(ini).pop();
+            while (v !== ini) {
+                ring.push(v);
+                const sig = salidas.get(v);
+                if (!sig || !sig.length) break;
+                v = sig.pop();
+            }
+            if (ring.length >= 4) anillos.push(ring);
+        }
+    }
+    const xy = v => [x0 + (v % V) * cell, y1 - ((v / V) | 0) * cell];
+    const area2 = ring => { let s = 0; for (let k = 0; k < ring.length; k++) { const [ax, ay] = ring[k], [bx, by] = ring[(k + 1) % ring.length]; s += ax * by - bx * ay; } return s; };
+    const polys = [];
+    for (const ring of anillos) {
+        const pts = [];
+        for (let k = 0; k < ring.length; k++) {   // quitar vertices alineados
+            const p = xy(ring[(k - 1 + ring.length) % ring.length]), q = xy(ring[k]), n = xy(ring[(k + 1) % ring.length]);
+            if ((q[0] - p[0]) * (n[1] - q[1]) - (q[1] - p[1]) * (n[0] - q[0]) !== 0) pts.push(q);
+        }
+        if (pts.length < 3 || area2(pts) >= 0) continue;   // exteriores (horarios); los huecos se ignoran
+        const ll = pts.map(aLonLat); ll.push(ll[0]);
+        polys.push(ll);
+    }
+    return polys.length ? turf.multiPolygon(polys.map(p => [p])) : null;
+}
+
+async function cortarTramoConMdt(unidad, tramo, lon, lat) {
+    await cargarLibsMdt();
+    const aUtm = c => proj4("EPSG:4326", "EPSG:25830", c), aLonLat = c => proj4("EPSG:25830", "EPSG:4326", c);
+    const anillos = anillosDe(unidad.geometry).map(r => r.map(aUtm));
+    let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+    anillos.flat().forEach(([x, y]) => { bx0 = Math.min(bx0, x); by0 = Math.min(by0, y); bx1 = Math.max(bx1, x); by1 = Math.max(by1, y); });
+    let cell = 5;
+    if ((bx1 - bx0) * (by1 - by0) / 25 > MDT_MAX_CELDAS) cell = 25;
+    if ((bx1 - bx0) * (by1 - by0) / 625 > MDT_MAX_CELDAS) throw new Error("tramo demasiado grande para el MDT");
+    const x0 = Math.floor(bx0 / cell) * cell - cell, y0 = Math.floor(by0 / cell) * cell - cell;
+    const x1 = Math.ceil(bx1 / cell) * cell + cell, y1 = Math.ceil(by1 / cell) * cell + cell;
+    const { dem, W, H } = await leerMdt(x0, y0, x1, y1, cell);
+    const N = W * H;
+
+    // Mascara de la unidad (par-impar sobre todos sus anillos)
+    const mask = new Uint8Array(N);
+    for (let R = 0; R < H; R++) {
+        const y = y1 - (R + 0.5) * cell, xs = [];
+        for (const ring of anillos) for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+            const [xa, ya] = ring[i], [xb, yb] = ring[j];
+            if ((ya > y) !== (yb > y)) xs.push(xa + (y - ya) * (xb - xa) / (yb - ya));
+        }
+        xs.sort((a, b) => a - b);
+        for (let k = 0; k + 1 < xs.length; k += 2) {
+            const c0 = Math.max(Math.ceil((xs[k] - x0) / cell - 0.5), 0), c1 = Math.min(Math.floor((xs[k + 1] - x0) / cell - 0.5), W - 1);
+            for (let c = c0; c <= c1; c++) mask[R * W + c] = 1;
+        }
+    }
+    // Cauce de MITECO grabado en el MDT para que el flujo siga la red oficial
+    const cauce = new Uint8Array(N), celdasCauce = [], extremos = [];
+    for (const l of lineasDe(tramo)) {
+        const pts = l.geometry.coordinates.map(aUtm), n0 = celdasCauce.length;
+        for (let k = 0; k + 1 < pts.length; k++) {
+            const [xa, ya] = pts[k], [xb, yb] = pts[k + 1];
+            const n = Math.max(1, Math.ceil(Math.hypot(xb - xa, yb - ya) / (cell / 2)));
+            for (let s = 0; s <= n; s++) {
+                const C = Math.floor((xa + (xb - xa) * s / n - x0) / cell), R = Math.floor((y1 - (ya + (yb - ya) * s / n)) / cell);
+                const i = R * W + C;
+                if (R >= 0 && R < H && C >= 0 && C < W && mask[i] && !cauce[i] && !isNaN(dem[i])) { cauce[i] = 1; celdasCauce.push(i); }
+            }
+        }
+        if (celdasCauce.length > n0) extremos.push(celdasCauce[n0], celdasCauce[celdasCauce.length - 1]);
+    }
+    if (!celdasCauce.length) throw new Error("el cauce no cae dentro de su subcuenca");
+    // Salida del tramo = su extremo de aguas abajo. MITECO digitaliza los tramos
+    // de nacimiento a desembocadura (comprobado: 135 de 136 bajan del primer al
+    // ultimo vertice), asi que es la ultima celda de la linea. Solo con lineas
+    // multiparte se elige el extremo mas bajo. No vale la celda mas baja del
+    // cauce: el MDT de 5 m tiene hoyos a lo largo del lecho y en los embalses es plano.
+    const cotaEntorno = i => {
+        const r = (i / W) | 0, c = i % W; let s = 0, k = 0;
+        for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) {
+            const rr = r + dr, cc = c + dc;
+            if (rr >= 0 && rr < H && cc >= 0 && cc < W && !isNaN(dem[rr * W + cc])) { s += dem[rr * W + cc]; k++; }
+        }
+        return k ? s / k : Infinity;
+    };
+    let salida = extremos[extremos.length - 1];
+    if (extremos.length > 2) extremos.forEach(i => { if (cotaEntorno(i) < cotaEntorno(salida)) salida = i; });
+    const z = new Float32Array(N);
+    for (let i = 0; i < N; i++) z[i] = isNaN(dem[i]) ? NaN : dem[i] - (cauce[i] ? 20 : 0);
+
+    // Priority-flood desde la salida del tramo: cada celda drena hacia la que la descubrio
+    const rec = new Int32Array(N).fill(-2);
+    const zf = new Float32Array(N);
+    const heap = new MonticuloMin();
+    let seq = 0;
+    rec[salida] = -1; zf[salida] = z[salida]; heap.push(zf[salida], seq++, salida);
+    const OFF = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]];
+    while (heap.size) {
+        const [zc, c] = heap.pop();
+        const r = (c / W) | 0, k = c % W;
+        for (const [dr, dc] of OFF) {
+            const rr = r + dr, cc = k + dc;
+            if (rr < 0 || rr >= H || cc < 0 || cc >= W) continue;
+            const n = rr * W + cc;
+            if (!mask[n] || rec[n] !== -2) continue;
+            rec[n] = c;
+            zf[n] = isNaN(z[n]) ? zc : Math.max(z[n], zc);
+            heap.push(zf[n], seq++, n);
+        }
+    }
+
+    // Punto: celda de cauce mas proxima a donde se pulso
+    const [px, py] = aUtm([lon, lat]);
+    let snap = celdasCauce[0], bestD = Infinity;
+    celdasCauce.forEach(i => {
+        const d = (x0 + (i % W + 0.5) * cell - px) ** 2 + (y1 - (((i / W) | 0) + 0.5) * cell - py) ** 2;
+        if (d < bestD) { bestD = d; snap = i; }
+    });
+
+    // Todo lo que drena hasta el punto
+    const nDon = new Int32Array(N + 1);
+    for (let i = 0; i < N; i++) if (rec[i] >= 0) nDon[rec[i] + 1]++;
+    for (let i = 0; i < N; i++) nDon[i + 1] += nDon[i];
+    const don = new Int32Array(nDon[N]), pos = nDon.slice(0, N);
+    for (let i = 0; i < N; i++) if (rec[i] >= 0) don[pos[rec[i]]++] = i;
+    const sel = new Uint8Array(N);
+    const pila = [snap]; sel[snap] = 1; let n = 0;
+    while (pila.length) {
+        const c = pila.pop(); n++;
+        for (let k = nDon[c]; k < nDon[c + 1]; k++) { const d = don[k]; if (!sel[d]) { sel[d] = 1; pila.push(d); } }
+    }
+    let nMask = 0; for (let i = 0; i < N; i++) nMask += mask[i];
+    return {
+        areaKm2: n * cell * cell / 1e6,
+        fraccion: n / nMask,
+        celda: cell,
+        punto: aLonLat([x0 + (snap % W + 0.5) * cell, y1 - (((snap / W) | 0) + 0.5) * cell]),
+        poligono: poligonizar(sel, W, H, x0, y1, cell, aLonLat)
+    };
+}
+
+function disolver(feats) {
+    // Union por parejas (mucho mas rapida que ir acumulando sobre un poligono creciente)
+    let capa = feats.filter(f => f && f.geometry);
+    while (capa.length > 1) {
+        const sig = [];
+        for (let i = 0; i < capa.length; i += 2) {
+            if (i + 1 >= capa.length) { sig.push(capa[i]); continue; }
+            try { sig.push(turf.union(turf.featureCollection([capa[i], capa[i + 1]])) || capa[i]); }
+            catch { sig.push(capa[i], capa[i + 1]); }
+        }
+        if (sig.length === capa.length) break;
+        capa = sig;
+    }
+    return capa.length === 1 ? capa[0] : turf.featureCollection(capa);
+}
+
+function resumenUnidades(unidades, rioPrincipal) {
+    let area = 0, cotaMax = -Infinity, sumCota = 0;
+    const rios = new Map(), bbox = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const f of unidades) {
+        const p = f.properties, a = +p.area_ctr_km2 || 0;
+        area += a;
+        if (f.bbox) { bbox[0] = Math.min(bbox[0], f.bbox[0]); bbox[1] = Math.min(bbox[1], f.bbox[1]); bbox[2] = Math.max(bbox[2], f.bbox[2]); bbox[3] = Math.max(bbox[3], f.bbox[3]); }
+        if (p.cota_max != null) cotaMax = Math.max(cotaMax, +p.cota_max);
+        if (p.cota_med != null) sumCota += a * p.cota_med;
+        if (p.cod_pfafrio && p.cod_pfafrio !== rioPrincipal && !rios.has(p.cod_pfafrio))
+            rios.set(p.cod_pfafrio, { nombre: p.nom_rio, area: +p.area_cu_km2 || 0 });
+    }
+    const afluentes = [...rios.values()].filter(r => r.nombre && r.nombre !== "SIN NOMBRE").sort((a, b) => b.area - a.area).slice(0, 8);
+    return { area, cotaMax: isFinite(cotaMax) ? cotaMax : null, sumCota, afluentes, n: unidades.length, bbox: isFinite(bbox[0]) ? bbox : null };
+}
+
+const fmtKm2 = a => a >= 100 ? a.toLocaleString("es-ES", { maximumFractionDigits: 0 }) : a.toLocaleString("es-ES", { maximumFractionDigits: 2 });
+
+function dibujarCuenca(geom, punto, tramo, info, extension) {
+    const feats = [];
+    if (geom) feats.push(...(geom.type === "FeatureCollection" ? geom.features : [geom]).map(f => ({ ...f, properties: { ...info, tipo: "cuenca" } })));
+    cuencaLayer = L.featureGroup().addTo(map);
+    if (feats.length) L.geoJSON(turf.featureCollection(feats), { style: () => ({ color: "#FFEB3B", weight: 2.5, fillColor: "#00BCD4", fillOpacity: 0.22 }) }).addTo(cuencaLayer);
+    if (tramo) L.geoJSON(tramo, { style: () => ({ color: "#00E5FF", weight: 4 }) }).addTo(cuencaLayer);
+    if (punto) L.circleMarker([punto[1], punto[0]], { radius: 7, color: "#fff", weight: 2, fillColor: "#E53935", fillOpacity: 1 })
+        .bindPopup(`<b>Punto de cierre</b><br>${punto[1].toFixed(5)}, ${punto[0].toFixed(5)}<br>Cuenca: ${fmtKm2(info.area_km2)} km²`).addTo(cuencaLayer);
+    const pfc = punto ? [turf.point(punto, { ...info, tipo: "punto de cierre" })] : [];
+    lastGeoJSON = turf.featureCollection(feats.concat(pfc));
+    document.getElementById("dl-btn").disabled = !feats.length;
+    const b = cuencaLayer.getBounds();
+    if (extension) b.extend([[extension[1], extension[0]], [extension[3], extension[2]]]);
+    if (b.isValid()) map.fitBounds(b.pad(0.08));
+}
+
+function mostrarWmsUnidades(cql) {
+    cuencaWms = L.tileLayer.wms(MITECO_WMS + "?", {
+        layers: "agua:subcuencas_pfaf_cx", format: "image/png", transparent: true, opacity: 0.85,
+        CQL_FILTER: cql, attribution: "Subcuencas Pfafstetter &copy; MITECO", maxZoom: 19
+    }).addTo(map);
+}
+
+function activarPuntoCuenca() {
+    cuencaPicking = true;
+    document.getElementById("map").classList.add("picking");
+    const ib = document.getElementById("info-banner");
+    ib.textContent = "Pulse sobre un cauce para calcular su cuenca vertiente";
+    ib.style.display = "block";
+}
+map.on("click", e => {
+    if (!cuencaPicking) return;
+    cuencaPicking = false;
+    document.getElementById("map").classList.remove("picking");
+    document.getElementById("info-banner").style.display = "none";
+    calcularCuencaPunto(e.latlng.lng, e.latlng.lat);
+});
+
+// Cuenca vertiente en un punto. opts: { tramo, titulo, mantenerMapa }
+async function calcularCuencaPunto(lon, lat, opts = {}) {
+    const btn = document.getElementById("btn-cuenca-punto");
+    if (opts.mantenerMapa) quitarCapaCuenca(); else clearMap();
+    btn.disabled = true;
+    const cab = opts.titulo ? `<span class="r-name">${escapeHtml(opts.titulo)}</span>\n` : "";
+    (opts.mantenerMapa ? addResult : setResult)(`${opts.mantenerMapa ? "\n\n" : ""}<span class="r-label">Calculando cuenca vertiente...</span>`);
+    const box = document.getElementById("result-box"), inicio = box.innerHTML.lastIndexOf('<span class="r-label">Calculando cuenca vertiente');
+    const pintar = h => { box.innerHTML = box.innerHTML.slice(0, inicio) + h; };
+    try {
+        showProgress(5, "Buscando el cauce mas cercano...");
+        let tramo = opts.tramo, distKm = 0;
+        if (!tramo) {
+            const t = await tramoMasCercano(lon, lat);
+            if (!t) { pintar(`<span class="r-info">No hay ningun cauce de la red de MITECO a menos de 600 m del punto. Pulse mas cerca de un rio.</span>`); return; }
+            tramo = t.tramo; distKm = t.distKm;
+        }
+        const U = tramo.properties.cod_pfafcuen, rioU = tramo.properties.cod_pfafrio;
+        showProgress(15, "Consultando subcuencas aguas arriba (MITECO)...");
+        const cqlArriba = pfafCqlAguasArriba(U);
+        const [propias, arriba] = await Promise.all([
+            wfsUnidades(`cod_pfafcuen = '${U}'`, true),
+            cqlArriba ? wfsUnidades(cqlArriba, false) : Promise.resolve([])
+        ]);
+        const propia = propias[0];
+        if (!propia) throw new Error(`no se encontro la subcuenca del tramo ${U}`);
+
+        // Tramo propio: hasta el punto con el MDT, o entero si no se puede
+        let corte = null, avisoMdt = "";
+        if (document.getElementById("chk-cuenca-mdt").checked) {
+            showProgress(35, "Cortando el tramo en el punto con el MDT del IGN...");
+            try { corte = await cortarTramoConMdt(propia, tramo, lon, lat); }
+            catch (e) { avisoMdt = `No se pudo cortar el tramo con el MDT (${e.message}); se cuenta entero.`; }
+        }
+        const sr = resumenUnidades(arriba, rioU);
+        const areaPropia = corte ? corte.areaKm2 : +propia.properties.area_ctr_km2;
+        const area = sr.area + areaPropia;
+        const punto = corte ? corte.punto : turf.nearestPointOnLine(lineasDe(tramo)[0], turf.point([lon, lat])).geometry.coordinates;
+
+        showProgress(60, "Dibujando la cuenca...");
+        let geom = null, notaGeom = "";
+        const partePropia = corte?.poligono || propia;
+        if (!arriba.length) geom = turf.feature(partePropia.geometry);
+        else if (arriba.length <= CUENCA_GEOM_MAX) {
+            const conGeom = await wfsUnidades(cqlArriba, true);
+            showProgress(80, `Uniendo ${conGeom.length} subcuencas...`);
+            await new Promise(r => setTimeout(r, 30));
+            geom = disolver(conGeom.map(f => turf.feature(f.geometry)).concat([turf.feature(partePropia.geometry)]));
+        } else {
+            mostrarWmsUnidades(cqlArriba);
+            geom = null;
+            notaGeom = `Cuenca grande (${sr.n.toLocaleString("es-ES")} subcuencas): se dibuja con el servicio de mapas de MITECO, y no hay contorno para descargar.`;
+        }
+        const cotaPunto = await getElevation(punto[0], punto[1]);
+        const cotaMax = Math.max(sr.cotaMax ?? -Infinity, +propia.properties.cota_max || -Infinity);
+        const cotaMed = (sr.sumCota + areaPropia * (+propia.properties.cota_med || 0)) / area;
+        const demar = findDemarcacion(punto[0], punto[1]);
+        const info = {
+            rio: tramo.properties.nom_rio, cod_pfafcuen: U, area_km2: +area.toFixed(3),
+            area_aguas_arriba_km2: +sr.area.toFixed(3), area_tramo_km2: +areaPropia.toFixed(3),
+            n_subcuencas: sr.n + 1, cota_max_m: isFinite(cotaMax) ? cotaMax : null, cota_punto_m: cotaPunto,
+            metodo_tramo: corte ? `MDT ${corte.celda} m IGN` : "tramo completo", lon: +punto[0].toFixed(6), lat: +punto[1].toFixed(6)
+        };
+        dibujarCuenca(geom, punto, tramo, info, geom ? null : sr.bbox);
+
+        let h = cab + `<span class="r-label">Cuenca vertiente</span>
+<span class="r-label">Rio:</span> ${escapeHtml(tramo.properties.nom_rio || "-")}${distKm > 0.05 ? ` <span class="r-info">(a ${(distKm * 1000).toFixed(0)} m del punto pulsado)</span>` : ""}
+<span class="r-label">Punto de cierre:</span> ${punto[1].toFixed(5)}, ${punto[0].toFixed(5)}${cotaPunto != null ? ` · ${cotaPunto.toFixed(0)} m` : ""}
+<span class="r-label">Demarcacion:</span> ${demar || "-"}
+
+<span class="r-name">${fmtKm2(area)} km²</span>
+<span class="r-info">  aguas arriba del tramo: ${fmtKm2(sr.area)} km² (${sr.n.toLocaleString("es-ES")} subcuencas)
+  tramo hasta el punto: ${fmtKm2(areaPropia)} km² ${corte ? `(MDT ${corte.celda} m, ${(corte.fraccion * 100).toFixed(0)} % de su subcuenca)` : "(subcuenca completa del tramo)"}</span>
+<span class="r-label">Cota maxima:</span> ${isFinite(cotaMax) ? cotaMax.toFixed(0) + " m" : "-"}
+<span class="r-label">Cota media:</span> ${isFinite(cotaMed) && cotaMed > 0 ? cotaMed.toFixed(0) + " m" : "-"}
+<span class="r-label">Codigo Pfafstetter del tramo:</span> ${U}`;
+        if (sr.afluentes.length) h += `\n\n<span class="r-label">Rios principales aguas arriba:</span>` + sr.afluentes.map(r => `\n  - ${escapeHtml(r.nombre)} <span class="r-info">(${fmtKm2(r.area)} km²)</span>`).join("");
+        if (avisoMdt) h += `\n\n<span style="color:#FFB74D;">${escapeHtml(avisoMdt)}</span>`;
+        if (notaGeom) h += `\n\n<span class="r-info">${notaGeom}</span>`;
+        h += `\n\n<span class="r-info" style="font-size:11px;">Fuente: subcuencas Pfafstetter por tramo (MITECO) y MDT 5 m (IGN).</span>`;
+        pintar(h);
+        showProgress(100, "Completado");
+    } catch (e) {
+        pintar(`<span style="color:#ff6b6b;">Error al calcular la cuenca: ${escapeHtml(e.message)}</span>`);
+    } finally { hideProgress(); btn.disabled = false; }
+}
+
+// Cuenca completa del rio buscado (en su desembocadura)
+async function cuencaRioCompleto() {
+    if (!lastRiverCodPfaf) return;
+    const R = lastRiverCodPfaf, btn = document.getElementById("btn-cuenca-rio");
+    btn.disabled = true;
+    quitarCapaCuenca();
+    addResult(`\n\n<span class="r-label">Calculando cuenca vertiente del rio...</span>`);
+    showProgress(10, "Descargando la cuenca del rio (MITECO)...");
+    try {
+        const filtro = encodeURIComponent(`cod_pfafrio = '${R}'`);
+        const [resp, unidades] = await Promise.all([
+            fetch(`${OGC_CUENCA_RIO}?f=json&limit=5&filter=${filtro}&filter-lang=cql-text`),
+            wfsUnidades(`cod_pfafcuen BETWEEN '${R}' AND '${R}9999999999999999999'`, false)
+        ]);
+        if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+        const cuenca = (await resp.json()).features?.[0];
+        if (!cuenca) throw new Error("MITECO no tiene la cuenca de este rio");
+        showProgress(80, "Dibujando...");
+        const sr = resumenUnidades(unidades, R);
+        const nombre = (cuenca.properties.nom_rio || "").trim();
+        const info = { rio: nombre, cod_pfafrio: R, area_km2: +sr.area.toFixed(3), n_subcuencas: sr.n, cota_max_m: sr.cotaMax };
+        dibujarCuenca(turf.feature(cuenca.geometry), null, null, info);
+        let h = `\n\n<span class="r-label">Cuenca vertiente en la desembocadura:</span> <span class="r-name">${fmtKm2(sr.area)} km²</span>
+<span class="r-label">Cota maxima:</span> ${sr.cotaMax != null ? sr.cotaMax.toFixed(0) + " m" : "-"}
+<span class="r-label">Cota media:</span> ${sr.area ? (sr.sumCota / sr.area).toFixed(0) + " m" : "-"}
+<span class="r-label">Subcuencas Pfafstetter:</span> ${sr.n.toLocaleString("es-ES")}`;
+        if (sr.afluentes.length) h += `\n\n<span class="r-label">Afluentes principales:</span>` + sr.afluentes.map(r => `\n  - ${escapeHtml(r.nombre)} <span class="r-info">(${fmtKm2(r.area)} km²)</span>`).join("");
+        h += `\n<span class="r-info" style="font-size:11px;">Para la cuenca en un punto concreto del rio, use la pestaña 💧 Cuenca.</span>`;
+        const box = document.getElementById("result-box");
+        box.innerHTML = box.innerHTML.replace(/\n\n<span class="r-label">Calculando cuenca vertiente del rio\.\.\.<\/span>$/, "") + h;
+        showProgress(100, "Completado");
+    } catch (e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${escapeHtml(e.message)}</span>`); }
+    finally { hideProgress(); btn.disabled = false; }
+}
+
+// Cuenca vertiente de un embalse: se cierra en el tramo de rio mas aguas abajo
+// que cruza el embalse, en su ultimo punto dentro del vaso (aprox. la presa).
+async function cuencaEmbalse() {
+    if (!lastEmbalseFeats) return;
+    const btn = document.getElementById("btn-cuenca-embalse");
+    btn.disabled = true;
+    try {
+        showProgress(5, "Buscando los cauces del embalse...");
+        const b = turf.bbox(turf.featureCollection(lastEmbalseFeats));
+        const cand = await fetchBbox(OGC_SUBTRAMOS, b.join(","), PAGE_LIMIT);
+        const dentro = cand.filter(t => t.properties?.cod_pfafcuen && lastEmbalseFeats.some(e => { try { return turf.booleanIntersects(t, e); } catch { return false; } }));
+        if (!dentro.length) { addResult(`\n\n<span class="r-info">Ningun cauce de MITECO cruza este embalse.</span>`); return; }
+        let tramo = dentro[0], maxN = -1;
+        for (const t of dentro) {
+            const n = dentro.filter(o => pfafEstaAguasArriba(o.properties.cod_pfafcuen, t.properties.cod_pfafcuen)).length;
+            if (n > maxN) { maxN = n; tramo = t; }
+        }
+        const vert = lineasDe(tramo).flatMap(l => l.geometry.coordinates)
+            .filter(c => lastEmbalseFeats.some(e => { try { return turf.booleanPointInPolygon(turf.point(c), e); } catch { return false; } }));
+        // Los tramos van de nacimiento a desembocadura: el ultimo vertice dentro
+        // del vaso es el mas proximo a la presa (sobre el agua el MDT es plano).
+        let cierre;
+        if (vert.length) {
+            cierre = vert[vert.length - 1];
+        } else {
+            cierre = turf.nearestPointOnLine(lineasDe(tramo)[0], turf.centroid(turf.featureCollection(lastEmbalseFeats))).geometry.coordinates;
+        }
+        const nombre = lastEmbalseFeats[0].properties?.nombre || "embalse";
+        await calcularCuencaPunto(cierre[0], cierre[1], { tramo, titulo: `Cuenca vertiente de ${nombre}`, mantenerMapa: true });
+    } catch (e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${escapeHtml(e.message)}</span>`); }
+    finally { hideProgress(); btn.disabled = false; }
 }
 
 // --- Download ---
