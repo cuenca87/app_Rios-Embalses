@@ -229,11 +229,14 @@ const MITECO_OGC_BASE = "https://gis.miteco.gob.es/geoserver/ogc/features/v1/";
 const MITECO_PROXY = "https://miteco-ogc-proxy.riosyembalses.workers.dev/";
 // WFS del workspace agua (cuenca vertiente: permite pedir solo atributos)
 const MITECO_WFS = "https://gis.miteco.gob.es/geoserver/agua/wfs";
+// WMS leido con fetch (contorno de cuencas grandes); las teselas del mapa van directas
+const MITECO_WMS_CORS = "https://gis.miteco.gob.es/geoserver/agua/wms";
 let mitecoViaProxy = false;
 const _fetchOriginal = window.fetch.bind(window);
 function mitecoRutaProxy(url) {
     if (url.startsWith(MITECO_OGC_BASE)) return MITECO_PROXY + url.slice(MITECO_OGC_BASE.length);
     if (url.startsWith(MITECO_WFS + "?")) return MITECO_PROXY + "agua/wfs" + url.slice(MITECO_WFS.length);
+    if (url.startsWith(MITECO_WMS_CORS + "?")) return MITECO_PROXY + "agua/wms" + url.slice(MITECO_WMS_CORS.length);
     return null;
 }
 window.fetch = async (input, init) => {
@@ -1119,7 +1122,9 @@ function anillosDe(geom) {
 }
 
 // Contorno exacto de un conjunto de celdas: aristas de borde encadenadas.
-function poligonizar(sel, W, H, x0, y1, cell, aLonLat) {
+// vertice(col, fila) da la coordenada [lon, lat] de una esquina de celda (fila 0 arriba).
+// Se descartan los huecos y los islotes de menos de minCeldas celdas.
+function poligonizar(sel, W, H, vertice, minCeldas = 0) {
     const salidas = new Map();
     const add = (a, b) => { if (!salidas.has(a)) salidas.set(a, []); salidas.get(a).push(b); };
     const V = W + 1, en = i => sel[i] === 1;
@@ -1146,20 +1151,52 @@ function poligonizar(sel, W, H, x0, y1, cell, aLonLat) {
             if (ring.length >= 4) anillos.push(ring);
         }
     }
-    const xy = v => [x0 + (v % V) * cell, y1 - ((v / V) | 0) * cell];
+    const cr = v => [v % V, -((v / V) | 0)];   // columna, -fila (y hacia arriba)
     const area2 = ring => { let s = 0; for (let k = 0; k < ring.length; k++) { const [ax, ay] = ring[k], [bx, by] = ring[(k + 1) % ring.length]; s += ax * by - bx * ay; } return s; };
     const polys = [];
     for (const ring of anillos) {
         const pts = [];
         for (let k = 0; k < ring.length; k++) {   // quitar vertices alineados
-            const p = xy(ring[(k - 1 + ring.length) % ring.length]), q = xy(ring[k]), n = xy(ring[(k + 1) % ring.length]);
+            const p = cr(ring[(k - 1 + ring.length) % ring.length]), q = cr(ring[k]), n = cr(ring[(k + 1) % ring.length]);
             if ((q[0] - p[0]) * (n[1] - q[1]) - (q[1] - p[1]) * (n[0] - q[0]) !== 0) pts.push(q);
         }
-        if (pts.length < 3 || area2(pts) >= 0) continue;   // exteriores (horarios); los huecos se ignoran
-        const ll = pts.map(aLonLat); ll.push(ll[0]);
+        if (pts.length < 3) continue;
+        const a = area2(pts);
+        if (a >= 0 || -a / 2 < minCeldas) continue;   // exteriores (horarios); huecos e islotes fuera
+        const ll = pts.map(([c, f]) => vertice(c, -f)); ll.push(ll[0]);
         polys.push(ll);
     }
     return polys.length ? turf.multiPolygon(polys.map(p => [p])) : null;
+}
+
+// Contorno de muchas subcuencas sin descargar su geometria: MITECO pinta las
+// unidades rellenas (estilo "polygon" de GeoServer) y se vectoriza el borde de
+// la mancha. Resolucion: el lado mayor de la cuenca en LADO_IMG pixeles.
+const LADO_IMG = 2048;
+async function contornoPorImagen(cql, bbox) {
+    const [w0, s0, e0, n0] = bbox, mx = (e0 - w0) * 0.02 + 1e-4, my = (n0 - s0) * 0.02 + 1e-4;
+    const w = w0 - mx, s = s0 - my, e = e0 + mx, n = n0 + my;
+    const kx = Math.cos((s + n) / 2 * Math.PI / 180);   // px aprox. cuadrados en metros
+    const anchoM = (e - w) * kx, altoM = n - s;
+    const W = Math.max(64, Math.round(anchoM >= altoM ? LADO_IMG : LADO_IMG * anchoM / altoM));
+    const H = Math.max(64, Math.round(altoM >= anchoM ? LADO_IMG : LADO_IMG * altoM / anchoM));
+    const p = new URLSearchParams({
+        SERVICE: "WMS", VERSION: "1.1.1", REQUEST: "GetMap", LAYERS: "agua:subcuencas_pfaf_cx", STYLES: "polygon",
+        SRS: "EPSG:4326", BBOX: [w, s, e, n].join(","), WIDTH: W, HEIGHT: H, FORMAT: "image/png", TRANSPARENT: "true",
+        CQL_FILTER: cql
+    });
+    const resp = await fetch(`${MITECO_WMS_CORS}?${p}`);
+    if (!resp.ok || !(resp.headers.get("Content-Type") || "").startsWith("image/png")) throw new Error(`WMS de MITECO: ${resp.status}`);
+    const bmp = await createImageBitmap(await resp.blob());
+    const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+    const ctx = cv.getContext("2d"); ctx.drawImage(bmp, 0, 0);
+    const px = ctx.getImageData(0, 0, W, H).data, sel = new Uint8Array(W * H);
+    for (let i = 0; i < W * H; i++) sel[i] = px[4 * i + 3] > 40 ? 1 : 0;
+    const dx = (e - w) / W, dy = (n - s) / H;
+    const poli = poligonizar(sel, W, H, (c, f) => [w + c * dx, n - f * dy], 30);
+    if (!poli) throw new Error("imagen vacia");
+    const tol = Math.max(dx, dy) * 0.6;
+    return { geom: turf.simplify(poli, { tolerance: tol, highQuality: false }), resM: Math.round(dy * 111320) };
 }
 
 async function cortarTramoConMdt(unidad, tramo, lon, lat) {
@@ -1271,7 +1308,7 @@ async function cortarTramoConMdt(unidad, tramo, lon, lat) {
         fraccion: n / nMask,
         celda: cell,
         punto: aLonLat([x0 + (snap % W + 0.5) * cell, y1 - (((snap / W) | 0) + 0.5) * cell]),
-        poligono: poligonizar(sel, W, H, x0, y1, cell, aLonLat)
+        poligono: poligonizar(sel, W, H, (c, f) => aLonLat([x0 + c * cell, y1 - f * cell]))
     };
 }
 
@@ -1396,9 +1433,16 @@ async function calcularCuencaPunto(lon, lat, opts = {}) {
             await new Promise(r => setTimeout(r, 30));
             geom = disolver(conGeom.map(f => turf.feature(f.geometry)).concat([turf.feature(partePropia.geometry)]));
         } else {
-            mostrarWmsUnidades(cqlArriba);
-            geom = null;
-            notaGeom = `Cuenca grande (${sr.n.toLocaleString("es-ES")} subcuencas): se dibuja con el servicio de mapas de MITECO, y no hay contorno para descargar.`;
+            showProgress(75, `Contorno de ${sr.n.toLocaleString("es-ES")} subcuencas...`);
+            try {
+                const c = await contornoPorImagen(cqlArriba, sr.bbox);
+                geom = disolver([turf.feature(c.geom.geometry), turf.feature(partePropia.geometry)]);
+                notaGeom = `Cuenca grande (${sr.n.toLocaleString("es-ES")} subcuencas): el contorno se obtiene de una imagen de MITECO con unos ${c.resM} m de pixel. La superficie se calcula con las subcuencas, no con el contorno.`;
+            } catch (e) {
+                mostrarWmsUnidades(cqlArriba);
+                geom = null;
+                notaGeom = `No se pudo obtener el contorno (${e.message}): se muestran las ${sr.n.toLocaleString("es-ES")} subcuencas con el servicio de mapas de MITECO.`;
+            }
         }
         const cotaPunto = await getElevation(punto[0], punto[1]);
         const cotaMax = Math.max(sr.cotaMax ?? -Infinity, +propia.properties.cota_max || -Infinity);

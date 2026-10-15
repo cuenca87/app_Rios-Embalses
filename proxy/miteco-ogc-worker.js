@@ -12,10 +12,13 @@
 //   agua/wfs?...request=GetFeature           -> consultas WFS del workspace agua
 //                                   (permite pedir solo atributos con propertyName;
 //                                   lo usa la cuenca vertiente de app_Rios-Embalses)
+//   agua/wms?...request=GetMap               -> imagen de las subcuencas que la cuenca
+//                                   vertiente lee pixel a pixel para sacar el contorno
+//                                   (un canvas no puede leer imagenes sin CORS)
 //
 // Solo GET, solo esas rutas (no es un proxy abierto) y solo desde ALLOWED_ORIGINS.
-// Los mosaicos de imagen (GetMap/GetTile) NO pasan por aqui: las imagenes no
-// estan sujetas a CORS y se piden directamente a MITECO.
+// Los mosaicos de imagen para ver en el mapa (GetMap/GetTile) NO pasan por aqui:
+// las imagenes no estan sujetas a CORS y se piden directamente a MITECO.
 
 const UPSTREAM = "https://gis.miteco.gob.es/geoserver/";
 
@@ -45,6 +48,7 @@ function rutaPermitida(path, params) {
   const req = (params.get("request") || params.get("REQUEST") || "").toLowerCase();
   if ((path === "wms" || path === "gwc/service/wmts") && req === "getfeatureinfo") return path;
   if (path === "agua/wfs" && req === "getfeature") return path;
+  if (path === "agua/wms" && req === "getmap") return path;
   return null;
 }
 
