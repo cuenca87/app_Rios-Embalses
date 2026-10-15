@@ -239,11 +239,20 @@ function mitecoRutaProxy(url) {
     if (url.startsWith(MITECO_WMS_CORS + "?")) return MITECO_PROXY + "agua/wms" + url.slice(MITECO_WMS_CORS.length);
     return null;
 }
+// "Failed to fetch" no dice que servidor fallo: se le anade el host
+function fetchConHost(input, init) {
+    return _fetchOriginal(input, init).catch(e => {
+        if (!(e instanceof TypeError)) throw e;
+        let host = "";
+        try { host = new URL(typeof input === "string" ? input : input.url, location.href).host; } catch (_) {}
+        throw new TypeError(`${e.message} (sin respuesta de ${host})`);
+    });
+}
 window.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input?.url;
     const proxyUrl = MITECO_PROXY && url ? mitecoRutaProxy(url) : null;
-    if (!proxyUrl) return _fetchOriginal(input, init);
-    const viaProxy = () => _fetchOriginal(proxyUrl, init);
+    if (!proxyUrl) return fetchConHost(input, init);
+    const viaProxy = () => fetchConHost(proxyUrl, init);
     if (mitecoViaProxy) return viaProxy();
     try {
         return await _fetchOriginal(input, init);
