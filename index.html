@@ -109,7 +109,20 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
 #v3d-cab button { background:none; border:1px solid #0f3460; color:#e0e0e0; border-radius:4px; font-size:16px; padding:2px 10px; cursor:pointer; }
 #v3d-cuerpo { flex:1; display:flex; min-height:0; }
 #v3d-mapa { flex:1; position:relative; }
-#v3d-panel { width:270px; padding:10px 12px; overflow-y:auto; font-size:12px; line-height:1.6; background:#16213e; border-left:1px solid #0f3460; }
+.fc-sub { color:#8892b0; font-size:12px; margin-bottom:8px; }
+.fc-sub b { color:#e0e0e0; }
+.v3d-bts.fc-per button { flex:1 1 0; }
+#v3d-cab b { font-size:18px; }
+.fc-stats { display:flex; gap:10px; margin:10px 0 2px; }
+.fc-stats > div { flex:1; }
+.fc-stats small { display:block; color:#8892b0; font-size:11px; }
+.fc-stats b { display:block; font-size:26px; line-height:1.15; color:#e0e0e0; font-weight:700; }
+.fc-gtit { color:#64B5F6; font-weight:600; margin:8px 0 2px; }
+#fc-graf { margin-top:8px; }
+.fc-marca { pointer-events:none; display:flex; align-items:center; gap:4px; }
+.fc-marca i { width:12px; height:12px; border-radius:50%; background:#E53935; border:2px solid #fff; box-sizing:border-box; flex:none; }
+.fc-marca span { background:rgba(255,255,255,.92); color:#1a1a2e; font-size:11px; font-weight:700; padding:1px 6px; border-radius:4px; white-space:nowrap; box-shadow:0 1px 3px rgba(0,0,0,.4); }
+#v3d-panel { width:360px; padding:10px 12px; overflow-y:auto; font-size:12px; line-height:1.6; background:#16213e; border-left:1px solid #0f3460; }
 #v3d-panel .r-name { font-size:16px; }
 #v3d-panel label { display:block; margin-top:8px; color:#00d4ff; }
 #v3d-panel input[type=range] { width:100%; }
@@ -121,7 +134,7 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
 #v3d .maplibregl-popup-tip { border-top-color:#16213e; border-bottom-color:#16213e; }
 @media (max-width: 768px) {
     #v3d-cuerpo { flex-direction:column; }
-    #v3d-panel { width:auto; max-height:38dvh; border-left:none; border-top:1px solid #0f3460; font-size:11px; }
+    #v3d-panel { width:auto; max-height:52dvh; border-left:none; border-top:1px solid #0f3460; font-size:11px; }
 }
 .saih-label{background:rgba(22,33,62,.85)!important;border:1px solid #0f3460!important;color:#e0e0e0!important;font-size:10px!important;font-weight:600!important;padding:2px 6px!important;border-radius:4px!important;box-shadow:0 1px 3px rgba(0,0,0,.3)!important}
 .saih-label::before{border-right-color:rgba(22,33,62,.85)!important}
@@ -1659,9 +1672,10 @@ async function calcularCuencaPunto(lon, lat, opts = {}) {
         if (avisoMdt) h += `\n\n<span style="color:#FFB74D;">${escapeHtml(avisoMdt)}</span>`;
         if (notaGeom) h += `\n\n<span class="r-info">${notaGeom}</span>`;
         h += `\n\n<span class="r-info" style="font-size:11px;">Fuente: subcuencas Pfafstetter por tramo (MITECO) y MDT 5 m (IGN).</span>`;
-        if (cuencaActual) h += BOTON_LLUVIA + BOTON_3D;
+        if (cuencaActual) h += BOTON_LLUVIA + BOTON_FICHA;
         pintar(h);
         lluviaAutomatica();
+        abrirFichaCuenca();
         showProgress(100, "Completado");
     } catch (e) {
         pintar(`<span style="color:#ff6b6b;">Error al calcular la cuenca: ${escapeHtml(e.message)}</span>`);
@@ -1700,10 +1714,11 @@ async function cuencaRioCompleto() {
 <span class="r-label">Subcuencas Pfafstetter:</span> ${sr.n.toLocaleString("es-ES")}`;
         if (sr.afluentes.length) h += `\n\n<span class="r-label">Afluentes principales:</span>` + sr.afluentes.map(r => `\n  - ${escapeHtml(r.nombre)} <span class="r-info">(${fmtKm2(r.area)} km²)</span>`).join("");
         h += `\n<span class="r-info" style="font-size:11px;">Para la cuenca en un punto concreto del rio, use la pestaña 💧 Cuenca.</span>`;
-        if (cuencaActual) h += BOTON_LLUVIA + BOTON_3D;
+        if (cuencaActual) h += BOTON_LLUVIA + BOTON_FICHA;
         const box = document.getElementById("result-box");
         box.innerHTML = box.innerHTML.replace(/\n\n<span class="r-label">Calculando cuenca vertiente del rio\.\.\.<\/span>$/, "") + h;
         lluviaAutomatica();
+        abrirFichaCuenca();
         showProgress(100, "Completado");
     } catch (e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${escapeHtml(e.message)}</span>`); }
     finally { hideProgress(); btn.disabled = false; }
@@ -1886,14 +1901,55 @@ function numES(v, dec = 0) {
     const [e, d] = v.toFixed(dec).split(".");
     return e.replace(/\B(?=(\d{3})+$)/g, ".") + (d && +d ? "," + d.replace(/0+$/, "") : "");
 }
-function fmtVolumen(mm, km2) {
-    const m3 = mm * km2 * 1000;
-    if (!(m3 > 0)) return "";
-    const vol = m3 >= 1e6 ? `${numES(m3 / 1e6, m3 < 1e7 ? 2 : m3 < 1e8 ? 1 : 0)} hm³` : `${numES(m3)} m³`;
-    const l = m3 * 1000;
-    const lit = l >= 1e12 ? `${numES(l / 1e12, 2)} billones de litros` : l >= 1e9 ? `${numES(Math.round(l / 1e7) * 10)} millones de litros`
-        : l >= 1e6 ? `${numES(l / 1e6, l < 1e7 ? 1 : 0)} millones de litros` : `${numES(l)} litros`;
-    return `${vol} · ${lit}`;
+// Celda de la cuenca con mas lluvia en las ultimas h horas: { k, mm, lon, lat } (o null)
+function maxCuenca(d, celdas, h) {
+    let best = null;
+    for (const k of celdas.dentro) {
+        const mm = acumCelda(d, k, h);
+        if (mm != null && (!best || mm > best.mm)) best = { k, mm };
+    }
+    if (!best) return null;
+    const c = best.k % d.W, f = Math.floor(best.k / d.W);
+    [best.lon, best.lat] = proj4("OPERA", "EPSG:4326", [d.ox + (c + 0.5) * d.rx, d.oy + (f + 0.5) * d.ry]);
+    return best;
+}
+// Lluvia de cada hora en una celda (mm; null sin cobertura)
+const serieCelda = (d, k) => d.horas.map(hh => !hh.v || hh.v[k] === LLUVIA_SIN ? null : hh.v[k] / 100);
+// Media de la cuenca en cada hora
+const serieMedia = (d, celdas) => d.horas.map(hh => lluviaHora(hh.v, celdas).media);
+// Fraccion de celdas de la cuenca con dato en alguna de las ultimas h horas
+function coberturaCuenca(d, celdas, h) {
+    let n = 0;
+    for (const k of celdas.dentro) if (acumCelda(d, k, h) != null) n++;
+    return n / celdas.dentro.length;
+}
+// Grafico de 24 h: barras de mm/h (eje izq.) y linea de acumulado del periodo elegido (eje der.)
+function graficoAcumulado(d, vals, h) {
+    const W = 340, H = 175, m = { l: 30, r: 30, t: 16, b: 20 }, n = vals.length, bw = (W - m.l - m.r) / n;
+    const ini = n - h;
+    const acum = []; let s = 0;
+    vals.forEach((v, i) => { if (i >= ini) s += v || 0; acum.push(i >= ini ? s : null); });
+    const tope = v => { const e = [1, 2, 5, 10, 20, 30, 50, 75, 100, 150, 200, 300, 500]; return e.find(x => x >= v) || Math.ceil(v); };
+    const vmax = tope(Math.max(0.5, ...vals.map(v => v || 0))), amax = tope(Math.max(0.5, s));
+    const yb = v => m.t + (H - m.t - m.b) * (1 - v / vmax), ya = v => m.t + (H - m.t - m.b) * (1 - v / amax);
+    let g = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;" font-size="9" fill="#8892b0">`;
+    g += `<rect x="${m.l + ini * bw}" y="${m.t}" width="${h * bw}" height="${H - m.t - m.b}" fill="#29B6F6" opacity="0.07"/>`;
+    [0, 0.5, 1].forEach(f => {
+        const y = m.t + (H - m.t - m.b) * (1 - f);
+        g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y}" y2="${y}" stroke="#0f3460"/>`
+            + `<text x="${m.l - 3}" y="${y + 3}" text-anchor="end">${numES(vmax * f, vmax * f % 1 ? 1 : 0)}</text>`
+            + `<text x="${W - m.r + 3}" y="${y + 3}" fill="#FFB74D">${numES(amax * f, amax * f % 1 ? 1 : 0)}</text>`;
+    });
+    g += `<text x="2" y="${m.t - 6}" font-size="8">mm/h</text><text x="${W - 2}" y="${m.t - 6}" text-anchor="end" font-size="8" fill="#FFB74D">mm acumulados</text>`;
+    vals.forEach((v, i) => {
+        const x = m.l + i * bw, hora = horaLocal(d.horas[i].fin);
+        if (v == null) g += `<rect x="${x + 0.5}" y="${m.t}" width="${bw - 1}" height="${H - m.t - m.b}" fill="#fff" opacity="0.04"><title>Hasta las ${hora}: sin datos</title></rect>`;
+        else if (v > 0) g += `<rect x="${x + 0.5}" y="${yb(v)}" width="${Math.max(bw - 1, 1)}" height="${H - m.b - yb(v)}" fill="${i >= ini ? "#29B6F6" : "#3d5a80"}"><title>Hasta las ${hora}: ${fmtMm(v)} mm</title></rect>`;
+        if (i % 6 === (n - 1) % 6) g += `<text x="${x + bw / 2}" y="${H - 6}" text-anchor="middle">${hora}</text>`;
+    });
+    const pts = acum.map((a, i) => a == null ? null : `${m.l + (i + 1) * bw},${ya(a)}`).filter(Boolean);
+    if (pts.length) g += `<polyline points="${m.l + ini * bw},${ya(0)} ${pts.join(" ")}" fill="none" stroke="#FFB74D" stroke-width="2"/>`;
+    return g + "</svg>";
 }
 
 async function lluviaRadarCuenca(boton) {
@@ -1918,30 +1974,21 @@ async function lluviaRadarCuenca(boton) {
             return { mm: ok.reduce((a, s) => a + s.media, 0), faltan: h - ok.length };
         };
         const finTxt = d.fin.toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-        const km2 = cuencaActual.areaKm2 || turf.area(geom) / 1e6;
         const filas = [1, 3, 6, 12, 24].map(h => {
-            const a = acum(h), vol = fmtVolumen(a.mm, km2);
-            return `${String(h).padStart(2)} h: ${fmtMm(a.mm)} mm${vol ? ` <span class="r-info">→ ${vol}</span>` : ""}${a.faltan ? ` <span class="r-info">(faltan ${a.faltan} h)</span>` : ""}`;
+            const a = acum(h), mx = maxCuenca(d, celdas, h);
+            return `${String(h).padStart(2)} h: ${fmtMm(a.mm)} mm${mx ? ` <span class="r-info">· punto mas lluvioso ${fmtMm(mx.mm)} mm</span>` : ""}${a.faltan ? ` <span class="r-info">(faltan ${a.faltan} h)</span>` : ""}`;
         });
         const cob = ult.media == null ? null : ult.cobertura;
-        let h = `\n<span class="r-label">Lluvia estimada por radar</span> <span class="r-info">(media sobre la cuenca, hasta las ${finTxt})</span>
-<span class="r-name">${fmtMm(ult.media)} mm</span> <span class="r-info">en la ultima hora${ult.media != null ? ` · maximo en una celda: ${fmtMm(ult.max)} mm` : ""}</span>
-<span class="r-info">Acumulado (lamina media → volumen caido sobre ${fmtKm2(km2)} km²):</span>
+        let h = `\n<span class="r-label">Lluvia estimada por radar</span> <span class="r-info">(hasta las ${finTxt})</span>
+<span class="r-name">${fmtMm(ult.media)} mm</span> <span class="r-info">de media en la ultima hora${ult.media != null ? ` · punto mas lluvioso: ${fmtMm(ult.max)} mm` : ""}</span>
+<span class="r-info">Acumulado (media sobre la cuenca):</span>
   ${filas.join("\n  ")}`;
-        // Explicacion de la cuenta con el acumulado de 24 h (o el mayor de los periodos con lluvia)
-        const ej = [24, 12, 6, 3, 1].map(hh => ({ hh, mm: acum(hh).mm })).find(a => a.mm >= 0.01);
-        if (ej) {
-            const dec = (v, d) => v.toLocaleString("es-ES", { minimumFractionDigits: d, maximumFractionDigits: d });
-            h += `\n<span class="r-info" style="font-size:11px;">Como se calcula: 1 mm de lluvia = 1 litro por m², en cualquier punto (la celda de 2 km es solo la resolucion del radar). `
-                + `En ${ej.hh} h: ${dec(ej.mm, 2)} L/m² × ${fmtKm2(km2)} km² (${fmtKm2(km2)} millones de m²) = ${fmtVolumen(ej.mm, km2).split(" · ")[1]}.</span>`;
-        }
         h += graficoLluvia(serie);
         const avisos = [];
         if (celdas.centroide) avisos.push("La cuenca es menor que una celda del radar (2 km): se da el valor de la celda que la contiene.");
         else avisos.push(`${celdas.dentro.length.toLocaleString("es-ES")} celdas de 2 km.`);
         if (cob != null && cob < 0.98) avisos.push(`Solo el ${(cob * 100).toFixed(0)} % de la cuenca tiene cobertura de radar en OPERA; el resto queda fuera de la media.`);
         if (ult.media == null) avisos.push("La ultima hora no tiene cobertura de radar en esta cuenca.");
-        avisos.push("El volumen es la lluvia caida sobre toda la cuenca (lamina media × superficie), no lo que llega al rio: parte se infiltra o se evapora.");
         avisos.push("Estimacion de radar sin ajustar con pluviometros: puede infra o sobrestimar, sobre todo con lluvia intensa o tras montañas.");
         h += `<span class="r-info" style="font-size:11px;">${avisos.join(" ")}\nFuente: compuesto OPERA de EUMETNET (radares de AEMET y vecinos), CC BY 4.0.</span>`;
         escribir(h);
@@ -1974,8 +2021,9 @@ new MutationObserver(() => {
     b.textContent = "▲ Ver resultado"; b.classList.add("nuevo");
 }).observe(document.getElementById("result-box"), { childList: true, characterData: true, subtree: true });
 
-// --- Ventana de la cuenca en 3D (MapLibre + relieve) ---
-const BOTON_3D = `<button class="action" onclick="abrirCuenca3D()" style="background:linear-gradient(135deg,#33691E,#7CB342);">🏔️ Ver la cuenca en 3D</button>`;
+// --- Ficha de la cuenca: ventana con mapa (2D/3D), lluvia por radar y graficas ---
+// Se abre sola al calcular una cuenca (como en radarspain.es) y con el boton del resultado.
+const BOTON_FICHA = `<button class="action" onclick="abrirFichaCuenca()" style="background:linear-gradient(135deg,#33691E,#7CB342);">🗺️ Abrir ficha de la cuenca (lluvia y 3D)</button>`;
 const MAPLIBRE = "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl";
 let libMaplibre = null, mapa3d = null;
 function cargarMaplibre() {
@@ -1989,34 +2037,41 @@ function cargarMaplibre() {
     return libMaplibre;
 }
 const WMTS_IGN = (srv, capa, fmt) => `https://www.ign.es/wmts/${srv}?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${capa}&STYLE=default&FORMAT=${fmt}&TILEMATRIXSET=GoogleMapsCompatible&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}`;
+const TERRARIUM = "https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png";
 
-async function abrirCuenca3D() {
+async function abrirFichaCuenca() {
     const c = cuencaActual;
     if (!c) return;
     const yaAbierta = !!document.getElementById("v3d");
     cerrarCuenca3D(true);
     const info = c.info || {}, km2 = c.areaKm2 || turf.area(c.geom) / 1e6;
+    const rio = info.rio && info.rio.trim() && info.rio !== "SIN NOMBRE" ? info.rio.trim() : null;
+    const titulo = rio ? rio.toLowerCase().replace(/(^|\s)(\p{L})/gu, (a, s, l) => s + l.toUpperCase()).replace(/\b(De|Del|La|Las|Los|El|Y)\b/g, x => x.toLowerCase()) : "Cuenca vertiente";
     const v = document.createElement("div");
     v.id = "v3d";
-    v.innerHTML = `<div id="v3d-cab"><b>🏔️ Cuenca ${info.rio && info.rio !== "SIN NOMBRE" ? "del " + escapeHtml(info.rio) : "vertiente"} · ${fmtKm2(km2)} km²</b><button title="Cerrar" onclick="cerrarCuenca3D()">✕</button></div>
-<div id="v3d-cuerpo"><div id="v3d-mapa"><div id="v3d-carga">Cargando el visor 3D...</div></div><div id="v3d-panel"></div></div>`;
+    v.innerHTML = `<div id="v3d-cab"><b>${escapeHtml(titulo)}</b><button title="Cerrar" onclick="cerrarCuenca3D()">✕</button></div>
+<div id="v3d-cuerpo"><div id="v3d-mapa"><div id="v3d-carga">Cargando el mapa...</div></div><div id="v3d-panel"></div></div>`;
     document.body.appendChild(v);
     if (!yaAbierta || !history.state?.v3d) history.pushState({ v3d: true }, "");
     const dato = (et, val) => val == null || val === "" ? "" : `<span class="r-label">${et}:</span> ${val}\n`;
     const cotaPunto = info.cota_punto_m, relieve = info.cota_max_m != null && cotaPunto != null ? info.cota_max_m - cotaPunto : null;
-    document.getElementById("v3d-panel").innerHTML = `<div style="white-space:pre-wrap;"><span class="r-name">${fmtKm2(km2)} km²</span>
-${dato("Rio", info.rio ? escapeHtml(info.rio) : null)}${dato("Cota maxima", info.cota_max_m != null ? numES(info.cota_max_m) + " m" : null)}${dato("Cota media", info.cota_med_m != null ? numES(info.cota_med_m) + " m" : null)}${dato("Cota del punto de cierre", cotaPunto != null ? numES(cotaPunto) + " m" : null)}${dato("Desnivel", relieve != null ? numES(relieve) + " m" : null)}${dato("Subcuencas Pfafstetter", info.n_subcuencas != null ? numES(info.n_subcuencas) : null)}</div>
-<label>Exageracion del relieve: <span id="v3d-exv"></span></label><input type="range" id="v3d-ex" min="1" max="5" step="0.5">
-<label>Fondo</label><div class="v3d-bts" id="v3d-fondo"><button data-f="orto" class="on">Ortofoto</button><button data-f="mapa">Mapa IGN</button></div>
-<label>Vista</label><div class="v3d-bts"><button id="v3d-giro">⟳ Girar</button><button id="v3d-reset">Encuadrar</button><button id="v3d-planta">Planta</button><button id="v3d-rios" class="on">Red fluvial</button></div>
-<label>Lluvia por radar</label><div class="v3d-bts" id="v3d-ll">${[0, 1, 3, 6, 12, 24].map(h => `<button data-h="${h}"${h ? "" : ' class="on"'}>${h ? h + " h" : "No"}</button>`).join("")}</div>
-<div id="v3d-llop" style="display:none;">Opacidad de la lluvia: <span id="v3d-llopv">50 %</span><input type="range" id="v3d-llopr" min="10" max="100" step="5" value="50"></div>
-<div id="v3d-llinfo" class="r-info" style="white-space:pre-wrap;"></div>
-<p class="r-info" style="font-size:10px;margin-top:10px;">Arrastre para mover; con dos dedos o el boton derecho, gire e incline. Pulse en el mapa para ver la cota (MDT del IGN).<br>Relieve 3D: Terrain Tiles de AWS (SRTM / EU-DEM, ~30 m). Ortofoto PNOA, mapa y red hidrografica © IGN. Cuenca: MITECO.</p>`;
+    document.getElementById("v3d-panel").innerHTML = `<div class="fc-sub">drena <b>${fmtKm2(km2)} km²</b> hasta aqui<span id="fc-cob"></span></div>
+<div class="v3d-bts fc-per" id="fc-per">${[1, 3, 6, 12, 24].map(h => `<button data-h="${h}"${h === 24 ? ' class="on"' : ""}>${h} h</button>`).join("")}</div>
+<div class="fc-stats"><div><small>Media sobre la cuenca</small><b id="fc-media">…</b></div><div><small>Punto mas lluvioso</small><b id="fc-max">…</b></div></div>
+<div id="fc-hasta" class="r-info">Leyendo el radar...</div>
+<div class="v3d-bts" id="fc-graf"><button data-g="max" class="on">Punto mas lluvioso</button><button data-g="media">Media de la cuenca</button></div>
+<div id="fc-grafico"></div>
+<div id="fc-notas" class="r-info" style="font-size:11px;"></div>
+<label>Vista</label><div class="v3d-bts"><button id="v3d-2d" class="on">Planta</button><button id="v3d-3d">🏔️ 3D</button><button id="v3d-reset">Encuadrar</button><button id="v3d-giro" style="display:none">⟳ Girar</button></div>
+<div id="v3d-exbox" style="display:none;"><label>Exageracion del relieve: <span id="v3d-exv"></span></label><input type="range" id="v3d-ex" min="1" max="5" step="0.5"></div>
+<label>Fondo</label><div class="v3d-bts" id="v3d-fondo"><button data-f="orto" class="on">Ortofoto</button><button data-f="mapa">Mapa IGN</button><button id="v3d-rios" class="on">Red fluvial</button></div>
+<label>Opacidad de la lluvia: <span id="v3d-llopv">60 %</span></label><input type="range" id="v3d-llopr" min="0" max="100" step="5" value="60">
+<label>Datos de la cuenca</label><div style="white-space:pre-wrap;">${dato("Superficie", fmtKm2(km2) + " km²")}${dato("Cota maxima", info.cota_max_m != null ? numES(info.cota_max_m) + " m" : null)}${dato("Cota media", info.cota_med_m != null ? numES(info.cota_med_m) + " m" : null)}${dato("Cota del punto de cierre", cotaPunto != null ? numES(cotaPunto) + " m" : null)}${dato("Desnivel", relieve != null ? numES(relieve) + " m" : null)}${dato("Subcuencas Pfafstetter", info.n_subcuencas != null ? numES(info.n_subcuencas) : null)}</div>
+<p class="r-info" style="font-size:10px;margin-top:8px;">Pulse en el mapa para ver la cota. En 3D: arrastre con dos dedos o con el boton derecho para girar e inclinar.<br>Lluvia: compuesto OPERA de EUMETNET (radares de AEMET y vecinos, celdas de 2 km), CC BY 4.0. Estimacion de radar sin ajustar con pluviometros. Cuenca: MITECO. Ortofoto, mapa y red hidrografica © IGN. Relieve 3D: Terrain Tiles de AWS (SRTM / EU-DEM, ~30 m).</p>`;
     try {
         await cargarMaplibre();
     } catch (e) {
-        document.getElementById("v3d-carga").textContent = "No se pudo cargar el visor 3D: " + e.message;
+        document.getElementById("v3d-carga").textContent = "No se pudo cargar el mapa: " + e.message;
         return;
     }
     if (!document.getElementById("v3d")) return;   // cerrada mientras cargaba
@@ -2036,8 +2091,8 @@ ${dato("Rio", info.rio ? escapeHtml(info.rio) : null)}${dato("Cota maxima", info
                 orto: { type: "raster", tiles: [WMTS_IGN("pnoa-ma", "OI.OrthoimageCoverage", "image/jpeg")], tileSize: 256, maxzoom: 19, attribution: "PNOA © IGN" },
                 mapa: { type: "raster", tiles: [WMTS_IGN("ign-base", "IGNBaseTodo", "image/png")], tileSize: 256, maxzoom: 17, attribution: "© IGN" },
                 hidro: { type: "raster", tiles: ["https://servicios.idee.es/wms-inspire/hidrografia?SERVICE=WMS&REQUEST=GetMap&VERSION=1.3.0&LAYERS=HY.Network&STYLES=&CRS=EPSG:3857&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256&FORMAT=image/png&TRANSPARENT=true"], tileSize: 256, attribution: "Hidrografia © IGN" },
-                dem: { type: "raster-dem", tiles: ["https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png"], encoding: "terrarium", tileSize: 256, maxzoom: 15, attribution: "Terrain Tiles (AWS)" },
-                demSombra: { type: "raster-dem", tiles: ["https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png"], encoding: "terrarium", tileSize: 256, maxzoom: 15 },
+                dem: { type: "raster-dem", tiles: [TERRARIUM], encoding: "terrarium", tileSize: 256, maxzoom: 15, attribution: "Terrain Tiles (AWS)" },
+                demSombra: { type: "raster-dem", tiles: [TERRARIUM], encoding: "terrarium", tileSize: 256, maxzoom: 15 },
                 mascara: { type: "geojson", data: mascara },
                 cuenca: { type: "geojson", data: c.geom },
                 tramo: { type: "geojson", data: c.tramo || vacio },
@@ -2053,8 +2108,7 @@ ${dato("Rio", info.rio ? escapeHtml(info.rio) : null)}${dato("Cota maxima", info
                 { id: "cuenca", type: "line", source: "cuenca", paint: { "line-color": "#FFEB3B", "line-width": 3 } },
                 { id: "tramo", type: "line", source: "tramo", paint: { "line-color": "#00E5FF", "line-width": 4 } },
                 { id: "punto", type: "circle", source: "punto", paint: { "circle-radius": 7, "circle-color": "#E53935", "circle-stroke-color": "#fff", "circle-stroke-width": 2 } }
-            ],
-            terrain: { source: "dem", exaggeration: exag }
+            ]
         },
         bounds: [[w, s], [e, n]], fitBoundsOptions: { padding: 30 }
     });
@@ -2062,23 +2116,33 @@ ${dato("Rio", info.rio ? escapeHtml(info.rio) : null)}${dato("Cota maxima", info
     window.mapa3d = m;
     m.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
     m.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
-    // Vista desde el punto de cierre mirando aguas arriba (hacia el centro de la cuenca)
-    const rumbo = c.punto ? turf.bearing(c.punto, turf.centroid(c.geom)) : -20;
-    const encuadrar = (dur = 1500) => {
-        const cam = m.cameraForBounds([[w, s], [e, n]], { padding: 40, bearing: rumbo });
-        m.easeTo({ center: cam.center, zoom: cam.zoom - 0.2, pitch: 60, bearing: rumbo, duration: dur });
-    };
-    m.once("load", () => {
-        document.getElementById("v3d-carga")?.remove();
-        encuadrar(2500);
-    });
+    m.once("load", () => document.getElementById("v3d-carga")?.remove());
 
-    // Controles
+    // Vista en planta o en 3D (desde el punto de cierre mirando aguas arriba)
+    const rumbo = c.punto ? turf.bearing(c.punto, turf.centroid(c.geom)) : -20;
     const ex = document.getElementById("v3d-ex"), exv = document.getElementById("v3d-exv");
     ex.value = exag; exv.textContent = `×${exag}`;
-    ex.oninput = () => { exv.textContent = `×${ex.value}`; m.setTerrain({ source: "dem", exaggeration: +ex.value }); };
-    document.querySelectorAll("#v3d-fondo button").forEach(b => b.onclick = () => {
-        document.querySelectorAll("#v3d-fondo button").forEach(x => x.classList.toggle("on", x === b));
+    let en3d = false;
+    const encuadrar = (dur = 1500) => {
+        const cam = m.cameraForBounds([[w, s], [e, n]], { padding: 40, bearing: en3d ? rumbo : 0 });
+        m.easeTo({ center: cam.center, zoom: cam.zoom - (en3d ? 0.2 : 0), pitch: en3d ? 60 : 0, bearing: en3d ? rumbo : 0, duration: dur });
+    };
+    const vista = tres => {
+        en3d = tres;
+        document.getElementById("v3d-2d").classList.toggle("on", !tres);
+        document.getElementById("v3d-3d").classList.toggle("on", tres);
+        document.getElementById("v3d-exbox").style.display = tres ? "" : "none";
+        document.getElementById("v3d-giro").style.display = tres ? "" : "none";
+        if (!tres) parar();
+        m.setTerrain(tres ? { source: "dem", exaggeration: +ex.value } : null);
+        encuadrar(tres ? 2000 : 1200);
+    };
+    document.getElementById("v3d-2d").onclick = () => vista(false);
+    document.getElementById("v3d-3d").onclick = () => vista(true);
+    document.getElementById("v3d-reset").onclick = () => encuadrar();
+    ex.oninput = () => { exv.textContent = `×${ex.value}`; if (en3d) m.setTerrain({ source: "dem", exaggeration: +ex.value }); };
+    document.querySelectorAll("#v3d-fondo button[data-f]").forEach(b => b.onclick = () => {
+        document.querySelectorAll("#v3d-fondo button[data-f]").forEach(x => x.classList.toggle("on", x === b));
         const orto = b.dataset.f === "orto";
         m.setLayoutProperty("orto", "visibility", orto ? "visible" : "none");
         m.setLayoutProperty("mapa", "visibility", orto ? "none" : "visible");
@@ -2086,16 +2150,11 @@ ${dato("Rio", info.rio ? escapeHtml(info.rio) : null)}${dato("Cota maxima", info
     });
     const rios = document.getElementById("v3d-rios");
     rios.onclick = () => { rios.classList.toggle("on"); m.setLayoutProperty("hidro", "visibility", rios.classList.contains("on") ? "visible" : "none"); };
-    document.getElementById("v3d-reset").onclick = () => encuadrar();
-    document.getElementById("v3d-planta").onclick = () => {
-        const cam = m.cameraForBounds([[w, s], [e, n]], { padding: 40 });
-        m.easeTo({ center: cam.center, zoom: cam.zoom, pitch: 0, bearing: 0, duration: 1200 });
-    };
-    // Giro continuo alrededor de la cuenca; se para al tocar el mapa
+    // Giro continuo alrededor de la cuenca (en 3D); se para al tocar el mapa
     const giro = document.getElementById("v3d-giro");
     let girando = false;
     const paso = () => { if (!girando || mapa3d !== m) return; m.setBearing(m.getBearing() + 0.15); requestAnimationFrame(paso); };
-    const parar = () => { girando = false; giro.classList.remove("on"); };
+    function parar() { girando = false; giro.classList.remove("on"); }
     giro.onclick = () => { girando = !girando; giro.classList.toggle("on", girando); if (girando) requestAnimationFrame(paso); };
     m.on("mousedown", parar); m.on("touchstart", parar); m.on("wheel", parar);
 
@@ -2105,19 +2164,19 @@ ${dato("Rio", info.rio ? escapeHtml(info.rio) : null)}${dato("Cota maxima", info
         const pop = new maplibregl.Popup({ closeButton: false }).setLngLat(ev.lngLat).setHTML("Cota: ...").addTo(m);
         const z = await Promise.race([getElevation(lng, lat), new Promise(r => setTimeout(() => r(null), 5000))]).catch(() => null);
         // El servicio del IGN tiene huecos sin dato (p. ej. parte de Avila): entonces, la del
-        // propio relieve 3D (absoluta y multiplicada por la exageracion)
+        // relieve 3D si esta activo (absoluta y multiplicada por la exageracion)
         let zt = null;
-        if (z == null) try { zt = m.terrain.getElevationForLngLatZoom(ev.lngLat, Math.min(14, Math.floor(m.getZoom()))) / m.getTerrain().exaggeration; } catch { }
-        const txt = z != null ? `${numES(z)} m` : zt ? `≈ ${numES(zt)} m <span style="color:#8892b0;font-weight:400">(relieve 3D, ~30 m; el IGN no da dato aqui)</span>` : "sin dato";
+        if (z == null && m.terrain) try { zt = m.terrain.getElevationForLngLatZoom(ev.lngLat, Math.min(14, Math.floor(m.getZoom()))) / m.getTerrain().exaggeration; } catch { }
+        const txt = z != null ? `${numES(z)} m` : zt ? `≈ ${numES(zt)} m <span style="color:#8892b0;font-weight:400">(relieve 3D, ~30 m; el IGN no da dato aqui)</span>` : "sin dato del IGN aqui";
         const dentro = c.geom.features.some(f => turf.booleanPointInPolygon([lng, lat], f));
         pop.setHTML(`<b>Cota: ${txt}</b><br><span style="color:#8892b0">${lat.toFixed(5)}, ${lng.toFixed(5)}${dentro ? "" : " · fuera de la cuenca"}</span>`);
     });
 
-    // Lluvia por radar sobre el relieve
-    const llInfo = document.getElementById("v3d-llinfo"), llOp = document.getElementById("v3d-llopr");
+    // --- Lluvia por radar ---
     // Con relieve, MapLibre no aplica raster-opacity a las capas de imagen: la transparencia
     // se pone en el canal alfa de la propia imagen
-    let llImg = null, llPend = null;
+    const llOp = document.getElementById("v3d-llopr");
+    let llImg = null, llPend = null, d = null, celdas = null, horas = 24, graf = "max", marcaMax = null;
     const [[bs, bw], [bn, be]] = LLUVIA_BOUNDS, llCoords = [[bw, bn], [be, bn], [be, bs], [bw, bs]];
     const conAlfa = async (url, f) => {
         const im = new Image(); im.src = url; await im.decode();
@@ -2137,36 +2196,67 @@ ${dato("Rio", info.rio ? escapeHtml(info.rio) : null)}${dato("Cota maxima", info
             m.getSource("lluvia")?.updateImage({ url, coordinates: llCoords });
         }, 120);
     };
-    document.querySelectorAll("#v3d-ll button").forEach(b => b.onclick = async () => {
-        document.querySelectorAll("#v3d-ll button").forEach(x => x.classList.toggle("on", x === b));
-        const h = +b.dataset.h;
-        if (m.getLayer("lluvia")) m.removeLayer("lluvia");
-        if (m.getSource("lluvia")) m.removeSource("lluvia");
-        document.getElementById("v3d-llop").style.display = h ? "" : "none";
-        if (!h) { llInfo.textContent = ""; return; }
-        try {
-            llInfo.textContent = "Leyendo el radar...";
-            const d = await cargarLluvia((k, t) => { llInfo.textContent = `Leyendo el radar... ${k}/${t} h`; });
-            if (mapa3d !== m || !b.classList.contains("on")) return;
-            llImg = imagenLluvia(d, h).url;
-            const url = await conAlfa(llImg, llOp.value / 100);
-            if (mapa3d !== m || !b.classList.contains("on")) return;
-            if (m.getLayer("lluvia")) m.removeLayer("lluvia");
-            if (m.getSource("lluvia")) m.removeSource("lluvia");
-            m.addSource("lluvia", { type: "image", url, coordinates: llCoords });
-            m.addLayer({ id: "lluvia", type: "raster", source: "lluvia", paint: { "raster-resampling": "nearest" } }, "mascara");
-            const celdas = celdasCuenca(d, c.geom);
-            let mm = null;
-            if (celdas) {
-                const ok = d.horas.slice(-h).map(hh => lluviaHora(hh.v, celdas).media).filter(x => x != null);
-                if (ok.length) mm = ok.reduce((a, x) => a + x, 0);
-            }
-            const vol = mm != null ? fmtVolumen(mm, km2) : "";
-            llInfo.innerHTML = `Ultimas ${h} h, hasta las ${horaLocal(d.fin)}\n<span class="r-label">Media en la cuenca:</span> ${mm == null ? "sin cobertura" : fmtMm(mm) + " mm"}${vol ? `\n<span class="r-label">Volumen:</span> ${vol}` : ""}\nColores como en la capa del mapa principal (de 0,1 a 150 mm).`;
-        } catch (err) {
-            llInfo.textContent = "No se pudo leer el radar: " + err.message;
+    const set = (id, h) => { const el = document.getElementById(id); if (el) el.innerHTML = h; };
+    const pintarLluvia = async () => {
+        if (!d || mapa3d !== m) return;
+        const h = horas;
+        // Cifras y grafico
+        const media = serieMedia(d, celdas).slice(-h).filter(x => x != null);
+        const mmMedia = media.length ? media.reduce((a, x) => a + x, 0) : null;
+        const mx = maxCuenca(d, celdas, h);
+        set("fc-media", mmMedia == null ? "sin datos" : `${fmtMm(mmMedia)} mm`);
+        set("fc-max", mx ? `${fmtMm(mx.mm)} mm` : "-");
+        const cob = coberturaCuenca(d, celdas, h);
+        set("fc-cob", cob >= 0.98 ? " · cobertura completa" : ` · cobertura del ${(cob * 100).toFixed(0)} %`);
+        set("fc-hasta", `Datos hasta las ${d.fin.toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} · ultimas ${h} h`);
+        const vals = graf === "max" && mx ? serieCelda(d, mx.k) : serieMedia(d, celdas);
+        set("fc-grafico", `<div class="fc-gtit">${graf === "max" && mx ? "Punto mas lluvioso (celda de 2 km)" : "Media sobre la cuenca"}</div>` + graficoAcumulado(d, vals, h));
+        const notas = [];
+        if (celdas.centroide) notas.push("La cuenca es menor que una celda del radar (2 km): se da el valor de la celda que la contiene.");
+        else notas.push(`${numES(celdas.dentro.length)} celdas de 2 km en la cuenca.`);
+        if (cob < 0.98) notas.push(`Solo el ${(cob * 100).toFixed(0)} % de la cuenca tiene cobertura de radar en OPERA; el resto queda fuera de la media.`);
+        const faltan = d.horas.slice(-h).filter(x => !x.v).length;
+        if (faltan) notas.push(`Faltan ${faltan} h de datos del radar.`);
+        set("fc-notas", notas.join(" "));
+        // Marca del punto mas lluvioso
+        marcaMax?.remove(); marcaMax = null;
+        if (mx && mx.mm >= 0.1) {
+            const el = document.createElement("div");
+            el.className = "fc-marca";
+            el.innerHTML = `<i></i><span>max. ${fmtMm(mx.mm)} mm</span>`;
+            marcaMax = new maplibregl.Marker({ element: el, anchor: "top-left", offset: [-6, -6] }).setLngLat([mx.lon, mx.lat]).addTo(m);
         }
+        // Capa de lluvia del periodo
+        llImg = imagenLluvia(d, h).url;
+        const url = await conAlfa(llImg, llOp.value / 100);
+        if (mapa3d !== m || h !== horas) return;
+        const pon = () => {
+            if (m.getSource("lluvia")) m.getSource("lluvia").updateImage({ url, coordinates: llCoords });
+            else {
+                m.addSource("lluvia", { type: "image", url, coordinates: llCoords });
+                m.addLayer({ id: "lluvia", type: "raster", source: "lluvia", paint: { "raster-resampling": "nearest" } }, "mascara");
+            }
+        };
+        if (m.isStyleLoaded()) pon(); else m.once("load", pon);
+    };
+    document.querySelectorAll("#fc-per button").forEach(b => b.onclick = () => {
+        document.querySelectorAll("#fc-per button").forEach(x => x.classList.toggle("on", x === b));
+        horas = +b.dataset.h; pintarLluvia();
     });
+    document.querySelectorAll("#fc-graf button").forEach(b => b.onclick = () => {
+        document.querySelectorAll("#fc-graf button").forEach(x => x.classList.toggle("on", x === b));
+        graf = b.dataset.g; pintarLluvia();
+    });
+    try {
+        d = await cargarLluvia((k, t) => set("fc-hasta", `Leyendo el radar... ${k}/${t} h`));
+        if (mapa3d !== m) return;
+        celdas = celdasCuenca(d, c.geom);
+        if (!celdas) throw new Error("la cuenca queda fuera del compuesto de OPERA (no incluye Canarias)");
+        await pintarLluvia();
+    } catch (err) {
+        set("fc-hasta", `<span style="color:#ff6b6b;">No se pudo leer el radar: ${escapeHtml(err.message)}</span>`);
+        set("fc-media", "-"); set("fc-max", "-");
+    }
 }
 function cerrarCuenca3D(desdeHistorial) {
     const v = document.getElementById("v3d");
