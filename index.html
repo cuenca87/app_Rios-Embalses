@@ -1487,7 +1487,7 @@ const fmtKm2 = a => a >= 100 ? a.toLocaleString("es-ES", { maximumFractionDigits
 function dibujarCuenca(geom, punto, tramo, info, extension) {
     const feats = [];
     if (geom) feats.push(...(geom.type === "FeatureCollection" ? geom.features : [geom]).map(f => ({ ...f, properties: { ...info, tipo: "cuenca" } })));
-    cuencaActual = feats.length ? { geom: turf.featureCollection(feats) } : null;
+    cuencaActual = feats.length ? { geom: turf.featureCollection(feats), areaKm2: +info?.area_km2 || null } : null;
     cuencaLayer = L.featureGroup().addTo(map);
     if (feats.length) L.geoJSON(turf.featureCollection(feats), { style: () => ({ color: "#FFEB3B", weight: 2.5, fillColor: "#00BCD4", fillOpacity: 0.22 }) }).addTo(cuencaLayer);
     if (tramo) L.geoJSON(tramo, { style: () => ({ color: "#00E5FF", weight: 4 }) }).addTo(cuencaLayer);
@@ -1839,6 +1839,17 @@ function graficoLluvia(serie) {
     return svg + "</svg>";
 }
 const fmtMm = v => v == null ? "-" : v === 0 ? "0" : v < 0.05 ? "<0.1" : v < 10 ? v.toFixed(1) : v.toFixed(0);
+// Volumen caido sobre la cuenca: 1 mm sobre 1 km² = 1.000 m³ = 1 millon de litros
+function fmtVolumen(mm, km2) {
+    const m3 = mm * km2 * 1000;
+    if (!(m3 > 0)) return "";
+    const n = (v, d) => v.toLocaleString("es-ES", { maximumFractionDigits: v < 10 ? d : 0 });
+    const vol = m3 >= 1e6 ? `${n(m3 / 1e6, 2)} hm³` : `${n(m3, 0)} m³`;
+    const l = m3 * 1000;
+    const lit = l >= 1e12 ? `${n(l / 1e12, 1)} billones de litros` : l >= 1e9 ? `${String(Math.round(l / 1e8) * 100).replace(/\B(?=(\d{3})+$)/g, ".")} millones de litros`
+        : l >= 1e6 ? `${n(l / 1e6, 1)} millones de litros` : `${n(l, 0)} litros`;
+    return `${vol} · ${lit}`;
+}
 
 async function lluviaRadarCuenca(boton) {
     if (!cuencaActual) return;
@@ -1862,11 +1873,15 @@ async function lluviaRadarCuenca(boton) {
             return { mm: ok.reduce((a, s) => a + s.media, 0), faltan: h - ok.length };
         };
         const finTxt = d.fin.toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-        const filas = [1, 3, 6, 12, 24].map(h => { const a = acum(h); return `${String(h).padStart(2)} h: ${fmtMm(a.mm)} mm${a.faltan ? ` <span class="r-info">(faltan ${a.faltan} h)</span>` : ""}`; });
+        const km2 = cuencaActual.areaKm2 || turf.area(geom) / 1e6;
+        const filas = [1, 3, 6, 12, 24].map(h => {
+            const a = acum(h), vol = fmtVolumen(a.mm, km2);
+            return `${String(h).padStart(2)} h: ${fmtMm(a.mm)} mm${vol ? ` <span class="r-info">→ ${vol}</span>` : ""}${a.faltan ? ` <span class="r-info">(faltan ${a.faltan} h)</span>` : ""}`;
+        });
         const cob = ult.media == null ? null : ult.cobertura;
         let h = `\n<span class="r-label">Lluvia estimada por radar</span> <span class="r-info">(media sobre la cuenca, hasta las ${finTxt})</span>
 <span class="r-name">${fmtMm(ult.media)} mm</span> <span class="r-info">en la ultima hora${ult.media != null ? ` · maximo en una celda: ${fmtMm(ult.max)} mm` : ""}</span>
-<span class="r-info">Acumulado:</span>
+<span class="r-info">Acumulado (lamina media → volumen caido sobre ${fmtKm2(km2)} km²):</span>
   ${filas.join("\n  ")}`;
         h += graficoLluvia(serie);
         const avisos = [];
@@ -1874,6 +1889,7 @@ async function lluviaRadarCuenca(boton) {
         else avisos.push(`${celdas.dentro.length.toLocaleString("es-ES")} celdas de 2 km.`);
         if (cob != null && cob < 0.98) avisos.push(`Solo el ${(cob * 100).toFixed(0)} % de la cuenca tiene cobertura de radar en OPERA; el resto queda fuera de la media.`);
         if (ult.media == null) avisos.push("La ultima hora no tiene cobertura de radar en esta cuenca.");
+        avisos.push("El volumen es la lluvia caida sobre toda la cuenca (lamina media × superficie), no lo que llega al rio: parte se infiltra o se evapora.");
         avisos.push("Estimacion de radar sin ajustar con pluviometros: puede infra o sobrestimar, sobre todo con lluvia intensa o tras montañas.");
         h += `<span class="r-info" style="font-size:11px;">${avisos.join(" ")}\nFuente: compuesto OPERA de EUMETNET (radares de AEMET y vecinos), CC BY 4.0.</span>`;
         escribir(h);
