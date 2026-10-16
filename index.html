@@ -101,6 +101,27 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
 .ll-fuente { margin-top:3px; font-size:9px; color:#8892b0; }
 .ll-sin { display:inline-block; width:9px; height:9px; background:rgba(90,90,90,.6); vertical-align:middle; }
 #map.picking, #map.picking .leaflet-interactive { cursor:crosshair; }
+/* Ventana de la cuenca en 3D */
+#v3d { position:fixed; inset:0; z-index:5000; background:#0b1022; display:flex; flex-direction:column; color:#e0e0e0; }
+#v3d-cab { display:flex; align-items:center; gap:10px; padding:8px 12px; background:#16213e; border-bottom:1px solid #0f3460; }
+#v3d-cab b { color:#64B5F6; font-size:14px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#v3d-cab button { background:none; border:1px solid #0f3460; color:#e0e0e0; border-radius:4px; font-size:16px; padding:2px 10px; cursor:pointer; }
+#v3d-cuerpo { flex:1; display:flex; min-height:0; }
+#v3d-mapa { flex:1; position:relative; }
+#v3d-panel { width:270px; padding:10px 12px; overflow-y:auto; font-size:12px; line-height:1.6; background:#16213e; border-left:1px solid #0f3460; }
+#v3d-panel .r-name { font-size:16px; }
+#v3d-panel label { display:block; margin-top:8px; color:#00d4ff; }
+#v3d-panel input[type=range] { width:100%; }
+.v3d-bts { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+.v3d-bts button { flex:1 1 45%; padding:5px 4px; border:1px solid #0f3460; border-radius:4px; background:#1a1a2e; color:#8892b0; font-size:11px; cursor:pointer; }
+.v3d-bts button.on { background:#1565C0; color:#fff; }
+#v3d-carga { position:absolute; top:10px; left:50%; transform:translateX(-50%); background:rgba(22,33,62,.9); color:#64B5F6; padding:5px 12px; border-radius:4px; font-size:12px; pointer-events:none; z-index:2; }
+#v3d .maplibregl-popup-content { background:#16213e; color:#e0e0e0; font-size:12px; padding:6px 10px; }
+#v3d .maplibregl-popup-tip { border-top-color:#16213e; border-bottom-color:#16213e; }
+@media (max-width: 768px) {
+    #v3d-cuerpo { flex-direction:column; }
+    #v3d-panel { width:auto; max-height:38dvh; border-left:none; border-top:1px solid #0f3460; font-size:11px; }
+}
 .saih-label{background:rgba(22,33,62,.85)!important;border:1px solid #0f3460!important;color:#e0e0e0!important;font-size:10px!important;font-weight:600!important;padding:2px 6px!important;border-radius:4px!important;box-shadow:0 1px 3px rgba(0,0,0,.3)!important}
 .saih-label::before{border-right-color:rgba(22,33,62,.85)!important}
 
@@ -1487,7 +1508,7 @@ const fmtKm2 = a => numES(a, a >= 100 ? 0 : 2);
 function dibujarCuenca(geom, punto, tramo, info, extension) {
     const feats = [];
     if (geom) feats.push(...(geom.type === "FeatureCollection" ? geom.features : [geom]).map(f => ({ ...f, properties: { ...info, tipo: "cuenca" } })));
-    cuencaActual = feats.length ? { geom: turf.featureCollection(feats), areaKm2: +info?.area_km2 || null } : null;
+    cuencaActual = feats.length ? { geom: turf.featureCollection(feats), areaKm2: +info?.area_km2 || null, punto, tramo, info } : null;
     cuencaLayer = L.featureGroup().addTo(map);
     if (feats.length) L.geoJSON(turf.featureCollection(feats), { style: () => ({ color: "#FFEB3B", weight: 2.5, fillColor: "#00BCD4", fillOpacity: 0.22 }) }).addTo(cuencaLayer);
     if (tramo) L.geoJSON(tramo, { style: () => ({ color: "#00E5FF", weight: 4 }) }).addTo(cuencaLayer);
@@ -1594,7 +1615,8 @@ async function calcularCuencaPunto(lon, lat, opts = {}) {
         const info = {
             rio: tramo.properties.nom_rio, cod_pfafcuen: U, area_km2: +area.toFixed(3),
             area_aguas_arriba_km2: +sr.area.toFixed(3), area_tramo_km2: +areaPropia.toFixed(3),
-            n_subcuencas: sr.n + 1, cota_max_m: isFinite(cotaMax) ? cotaMax : null, cota_punto_m: cotaPunto,
+            n_subcuencas: sr.n + 1, cota_max_m: isFinite(cotaMax) ? cotaMax : null,
+            cota_med_m: isFinite(cotaMed) && cotaMed > 0 ? Math.round(cotaMed) : null, cota_punto_m: cotaPunto,
             metodo_tramo: corte ? `MDT ${corte.celda} m IGN` : "tramo completo", lon: +punto[0].toFixed(6), lat: +punto[1].toFixed(6)
         };
         dibujarCuenca(geom, punto, tramo, info, geom ? null : sr.bbox);
@@ -1619,7 +1641,7 @@ async function calcularCuencaPunto(lon, lat, opts = {}) {
         if (avisoMdt) h += `\n\n<span style="color:#FFB74D;">${escapeHtml(avisoMdt)}</span>`;
         if (notaGeom) h += `\n\n<span class="r-info">${notaGeom}</span>`;
         h += `\n\n<span class="r-info" style="font-size:11px;">Fuente: subcuencas Pfafstetter por tramo (MITECO) y MDT 5 m (IGN).</span>`;
-        if (cuencaActual) h += BOTON_LLUVIA;
+        if (cuencaActual) h += BOTON_LLUVIA + BOTON_3D;
         pintar(h);
         lluviaAutomatica();
         showProgress(100, "Completado");
@@ -1651,7 +1673,8 @@ async function cuencaRioCompleto() {
         showProgress(80, "Dibujando...");
         const sr = resumenUnidades(unidades, R);
         const nombre = (cuenca.properties.nom_rio || "").trim();
-        const info = { rio: nombre, cod_pfafrio: R, area_km2: +sr.area.toFixed(3), n_subcuencas: sr.n, cota_max_m: sr.cotaMax };
+        const info = { rio: nombre, cod_pfafrio: R, area_km2: +sr.area.toFixed(3), n_subcuencas: sr.n, cota_max_m: sr.cotaMax,
+            cota_med_m: sr.area ? Math.round(sr.sumCota / sr.area) : null };
         dibujarCuenca(turf.feature(cuenca.geometry), null, null, info);
         let h = `\n\n<span class="r-label">Cuenca vertiente en la desembocadura:</span> <span class="r-name">${fmtKm2(sr.area)} km²</span>
 <span class="r-label">Cota maxima:</span> ${sr.cotaMax != null ? sr.cotaMax.toFixed(0) + " m" : "-"}
@@ -1659,7 +1682,7 @@ async function cuencaRioCompleto() {
 <span class="r-label">Subcuencas Pfafstetter:</span> ${sr.n.toLocaleString("es-ES")}`;
         if (sr.afluentes.length) h += `\n\n<span class="r-label">Afluentes principales:</span>` + sr.afluentes.map(r => `\n  - ${escapeHtml(r.nombre)} <span class="r-info">(${fmtKm2(r.area)} km²)</span>`).join("");
         h += `\n<span class="r-info" style="font-size:11px;">Para la cuenca en un punto concreto del rio, use la pestaña 💧 Cuenca.</span>`;
-        if (cuencaActual) h += BOTON_LLUVIA;
+        if (cuencaActual) h += BOTON_LLUVIA + BOTON_3D;
         const box = document.getElementById("result-box");
         box.innerHTML = box.innerHTML.replace(/\n\n<span class="r-label">Calculando cuenca vertiente del rio\.\.\.<\/span>$/, "") + h;
         lluviaAutomatica();
@@ -1918,6 +1941,183 @@ function lluviaAutomatica() {
     const bts = document.querySelectorAll("#result-box button.btn-lluvia");
     if (bts.length) bts[bts.length - 1].click();
 }
+
+// --- Ventana de la cuenca en 3D (MapLibre + relieve) ---
+const BOTON_3D = `<button class="action" onclick="abrirCuenca3D()" style="background:linear-gradient(135deg,#33691E,#7CB342);">🏔️ Ver la cuenca en 3D</button>`;
+const MAPLIBRE = "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl";
+let libMaplibre = null, mapa3d = null;
+function cargarMaplibre() {
+    if (!libMaplibre) {
+        const css = document.createElement("link");
+        css.rel = "stylesheet"; css.href = MAPLIBRE + ".css";
+        document.head.appendChild(css);
+        libMaplibre = cargarScript(MAPLIBRE + ".js");
+        libMaplibre.catch(() => { libMaplibre = null; });
+    }
+    return libMaplibre;
+}
+const WMTS_IGN = (srv, capa, fmt) => `https://www.ign.es/wmts/${srv}?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${capa}&STYLE=default&FORMAT=${fmt}&TILEMATRIXSET=GoogleMapsCompatible&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}`;
+
+async function abrirCuenca3D() {
+    const c = cuencaActual;
+    if (!c) return;
+    const yaAbierta = !!document.getElementById("v3d");
+    cerrarCuenca3D(true);
+    const info = c.info || {}, km2 = c.areaKm2 || turf.area(c.geom) / 1e6;
+    const v = document.createElement("div");
+    v.id = "v3d";
+    v.innerHTML = `<div id="v3d-cab"><b>🏔️ Cuenca ${info.rio && info.rio !== "SIN NOMBRE" ? "del " + escapeHtml(info.rio) : "vertiente"} · ${fmtKm2(km2)} km²</b><button title="Cerrar" onclick="cerrarCuenca3D()">✕</button></div>
+<div id="v3d-cuerpo"><div id="v3d-mapa"><div id="v3d-carga">Cargando el visor 3D...</div></div><div id="v3d-panel"></div></div>`;
+    document.body.appendChild(v);
+    if (!yaAbierta || !history.state?.v3d) history.pushState({ v3d: true }, "");
+    const dato = (et, val) => val == null || val === "" ? "" : `<span class="r-label">${et}:</span> ${val}\n`;
+    const cotaPunto = info.cota_punto_m, relieve = info.cota_max_m != null && cotaPunto != null ? info.cota_max_m - cotaPunto : null;
+    document.getElementById("v3d-panel").innerHTML = `<div style="white-space:pre-wrap;"><span class="r-name">${fmtKm2(km2)} km²</span>
+${dato("Rio", info.rio ? escapeHtml(info.rio) : null)}${dato("Cota maxima", info.cota_max_m != null ? numES(info.cota_max_m) + " m" : null)}${dato("Cota media", info.cota_med_m != null ? numES(info.cota_med_m) + " m" : null)}${dato("Cota del punto de cierre", cotaPunto != null ? numES(cotaPunto) + " m" : null)}${dato("Desnivel", relieve != null ? numES(relieve) + " m" : null)}${dato("Subcuencas Pfafstetter", info.n_subcuencas != null ? numES(info.n_subcuencas) : null)}</div>
+<label>Exageracion del relieve: <span id="v3d-exv"></span></label><input type="range" id="v3d-ex" min="1" max="5" step="0.5">
+<label>Fondo</label><div class="v3d-bts" id="v3d-fondo"><button data-f="orto" class="on">Ortofoto</button><button data-f="mapa">Mapa IGN</button></div>
+<label>Vista</label><div class="v3d-bts"><button id="v3d-giro">⟳ Girar</button><button id="v3d-reset">Encuadrar</button><button id="v3d-planta">Planta</button><button id="v3d-rios" class="on">Red fluvial</button></div>
+<label>Lluvia por radar</label><div class="v3d-bts" id="v3d-ll">${[0, 1, 3, 6, 12, 24].map(h => `<button data-h="${h}"${h ? "" : ' class="on"'}>${h ? h + " h" : "No"}</button>`).join("")}</div>
+<div id="v3d-llinfo" class="r-info" style="white-space:pre-wrap;"></div>
+<p class="r-info" style="font-size:10px;margin-top:10px;">Arrastre para mover; con dos dedos o el boton derecho, gire e incline. Pulse en el mapa para ver la cota (MDT del IGN).<br>Relieve 3D: Terrain Tiles de AWS (SRTM / EU-DEM, ~30 m). Ortofoto PNOA, mapa y red hidrografica © IGN. Cuenca: MITECO.</p>`;
+    try {
+        await cargarMaplibre();
+    } catch (e) {
+        document.getElementById("v3d-carga").textContent = "No se pudo cargar el visor 3D: " + e.message;
+        return;
+    }
+    if (!document.getElementById("v3d")) return;   // cerrada mientras cargaba
+
+    // Mascara: todo el mundo menos la cuenca, oscurecido
+    const polis = c.geom.features.flatMap(f => f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : []);
+    const mascara = turf.polygon([[[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]], ...polis.map(p => p[0])]);
+    const [w, s, e, n] = turf.bbox(c.geom);
+    const ratio = relieve != null ? relieve / (Math.sqrt(km2) * 1000) : 0.05;
+    const exag = ratio < 0.02 ? 3 : ratio < 0.06 ? 2 : 1.5;
+    const vacio = turf.featureCollection([]);
+    mapa3d = new maplibregl.Map({
+        container: "v3d-mapa", maxPitch: 80, attributionControl: { compact: true },
+        style: {
+            version: 8,
+            sources: {
+                orto: { type: "raster", tiles: [WMTS_IGN("pnoa-ma", "OI.OrthoimageCoverage", "image/jpeg")], tileSize: 256, maxzoom: 19, attribution: "PNOA © IGN" },
+                mapa: { type: "raster", tiles: [WMTS_IGN("ign-base", "IGNBaseTodo", "image/png")], tileSize: 256, maxzoom: 17, attribution: "© IGN" },
+                hidro: { type: "raster", tiles: ["https://servicios.idee.es/wms-inspire/hidrografia?SERVICE=WMS&REQUEST=GetMap&VERSION=1.3.0&LAYERS=HY.Network&STYLES=&CRS=EPSG:3857&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256&FORMAT=image/png&TRANSPARENT=true"], tileSize: 256, attribution: "Hidrografia © IGN" },
+                dem: { type: "raster-dem", tiles: ["https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png"], encoding: "terrarium", tileSize: 256, maxzoom: 15, attribution: "Terrain Tiles (AWS)" },
+                demSombra: { type: "raster-dem", tiles: ["https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png"], encoding: "terrarium", tileSize: 256, maxzoom: 15 },
+                mascara: { type: "geojson", data: mascara },
+                cuenca: { type: "geojson", data: c.geom },
+                tramo: { type: "geojson", data: c.tramo || vacio },
+                punto: { type: "geojson", data: c.punto ? turf.point(c.punto) : vacio }
+            },
+            layers: [
+                { id: "fondo", type: "background", paint: { "background-color": "#0b1022" } },
+                { id: "orto", type: "raster", source: "orto" },
+                { id: "mapa", type: "raster", source: "mapa", layout: { visibility: "none" } },
+                { id: "sombra", type: "hillshade", source: "demSombra", layout: { visibility: "none" }, paint: { "hillshade-exaggeration": 0.4 } },
+                { id: "hidro", type: "raster", source: "hidro", paint: { "raster-opacity": 0.9 } },
+                { id: "mascara", type: "fill", source: "mascara", paint: { "fill-color": "#000", "fill-opacity": 0.5 } },
+                { id: "cuenca", type: "line", source: "cuenca", paint: { "line-color": "#FFEB3B", "line-width": 3 } },
+                { id: "tramo", type: "line", source: "tramo", paint: { "line-color": "#00E5FF", "line-width": 4 } },
+                { id: "punto", type: "circle", source: "punto", paint: { "circle-radius": 7, "circle-color": "#E53935", "circle-stroke-color": "#fff", "circle-stroke-width": 2 } }
+            ],
+            terrain: { source: "dem", exaggeration: exag }
+        },
+        bounds: [[w, s], [e, n]], fitBoundsOptions: { padding: 30 }
+    });
+    const m = mapa3d;
+    window.mapa3d = m;
+    m.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
+    m.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
+    // Vista desde el punto de cierre mirando aguas arriba (hacia el centro de la cuenca)
+    const rumbo = c.punto ? turf.bearing(c.punto, turf.centroid(c.geom)) : -20;
+    const encuadrar = (dur = 1500) => {
+        const cam = m.cameraForBounds([[w, s], [e, n]], { padding: 40, bearing: rumbo });
+        m.easeTo({ center: cam.center, zoom: cam.zoom - 0.2, pitch: 60, bearing: rumbo, duration: dur });
+    };
+    m.once("load", () => {
+        document.getElementById("v3d-carga")?.remove();
+        encuadrar(2500);
+    });
+
+    // Controles
+    const ex = document.getElementById("v3d-ex"), exv = document.getElementById("v3d-exv");
+    ex.value = exag; exv.textContent = `×${exag}`;
+    ex.oninput = () => { exv.textContent = `×${ex.value}`; m.setTerrain({ source: "dem", exaggeration: +ex.value }); };
+    document.querySelectorAll("#v3d-fondo button").forEach(b => b.onclick = () => {
+        document.querySelectorAll("#v3d-fondo button").forEach(x => x.classList.toggle("on", x === b));
+        const orto = b.dataset.f === "orto";
+        m.setLayoutProperty("orto", "visibility", orto ? "visible" : "none");
+        m.setLayoutProperty("mapa", "visibility", orto ? "none" : "visible");
+        m.setLayoutProperty("sombra", "visibility", orto ? "none" : "visible");
+    });
+    const rios = document.getElementById("v3d-rios");
+    rios.onclick = () => { rios.classList.toggle("on"); m.setLayoutProperty("hidro", "visibility", rios.classList.contains("on") ? "visible" : "none"); };
+    document.getElementById("v3d-reset").onclick = () => encuadrar();
+    document.getElementById("v3d-planta").onclick = () => {
+        const cam = m.cameraForBounds([[w, s], [e, n]], { padding: 40 });
+        m.easeTo({ center: cam.center, zoom: cam.zoom, pitch: 0, bearing: 0, duration: 1200 });
+    };
+    // Giro continuo alrededor de la cuenca; se para al tocar el mapa
+    const giro = document.getElementById("v3d-giro");
+    let girando = false;
+    const paso = () => { if (!girando || mapa3d !== m) return; m.setBearing(m.getBearing() + 0.15); requestAnimationFrame(paso); };
+    const parar = () => { girando = false; giro.classList.remove("on"); };
+    giro.onclick = () => { girando = !girando; giro.classList.toggle("on", girando); if (girando) requestAnimationFrame(paso); };
+    m.on("mousedown", parar); m.on("touchstart", parar); m.on("wheel", parar);
+
+    // Cota al pulsar (servicio de cotas del IGN)
+    m.on("click", async ev => {
+        const { lng, lat } = ev.lngLat;
+        const pop = new maplibregl.Popup({ closeButton: false }).setLngLat(ev.lngLat).setHTML("Cota: ...").addTo(m);
+        const z = await Promise.race([getElevation(lng, lat), new Promise(r => setTimeout(() => r(null), 5000))]).catch(() => null);
+        // El servicio del IGN tiene huecos sin dato (p. ej. parte de Avila): entonces, la del
+        // propio relieve 3D (absoluta y multiplicada por la exageracion)
+        let zt = null;
+        if (z == null) try { zt = m.terrain.getElevationForLngLatZoom(ev.lngLat, Math.min(14, Math.floor(m.getZoom()))) / m.getTerrain().exaggeration; } catch { }
+        const txt = z != null ? `${numES(z)} m` : zt ? `≈ ${numES(zt)} m <span style="color:#8892b0;font-weight:400">(relieve 3D, ~30 m; el IGN no da dato aqui)</span>` : "sin dato";
+        const dentro = c.geom.features.some(f => turf.booleanPointInPolygon([lng, lat], f));
+        pop.setHTML(`<b>Cota: ${txt}</b><br><span style="color:#8892b0">${lat.toFixed(5)}, ${lng.toFixed(5)}${dentro ? "" : " · fuera de la cuenca"}</span>`);
+    });
+
+    // Lluvia por radar sobre el relieve
+    const llInfo = document.getElementById("v3d-llinfo");
+    document.querySelectorAll("#v3d-ll button").forEach(b => b.onclick = async () => {
+        document.querySelectorAll("#v3d-ll button").forEach(x => x.classList.toggle("on", x === b));
+        const h = +b.dataset.h;
+        if (m.getLayer("lluvia")) m.removeLayer("lluvia");
+        if (m.getSource("lluvia")) m.removeSource("lluvia");
+        if (!h) { llInfo.textContent = ""; return; }
+        try {
+            llInfo.textContent = "Leyendo el radar...";
+            const d = await cargarLluvia((k, t) => { llInfo.textContent = `Leyendo el radar... ${k}/${t} h`; });
+            if (mapa3d !== m || !b.classList.contains("on")) return;
+            const img = imagenLluvia(d, h), [[bs, bw], [bn, be]] = LLUVIA_BOUNDS;
+            m.addSource("lluvia", { type: "image", url: img.url, coordinates: [[bw, bn], [be, bn], [be, bs], [bw, bs]] });
+            m.addLayer({ id: "lluvia", type: "raster", source: "lluvia", paint: { "raster-opacity": 0.75, "raster-resampling": "nearest" } }, "mascara");
+            const celdas = celdasCuenca(d, c.geom);
+            let mm = null;
+            if (celdas) {
+                const ok = d.horas.slice(-h).map(hh => lluviaHora(hh.v, celdas).media).filter(x => x != null);
+                if (ok.length) mm = ok.reduce((a, x) => a + x, 0);
+            }
+            const vol = mm != null ? fmtVolumen(mm, km2) : "";
+            llInfo.innerHTML = `Ultimas ${h} h, hasta las ${horaLocal(d.fin)}\n<span class="r-label">Media en la cuenca:</span> ${mm == null ? "sin cobertura" : fmtMm(mm) + " mm"}${vol ? `\n<span class="r-label">Volumen:</span> ${vol}` : ""}\nColores como en la capa del mapa principal (de 0,1 a 150 mm).`;
+        } catch (err) {
+            llInfo.textContent = "No se pudo leer el radar: " + err.message;
+        }
+    });
+}
+function cerrarCuenca3D(desdeHistorial) {
+    const v = document.getElementById("v3d");
+    if (!v) return;
+    if (mapa3d) { mapa3d.remove(); mapa3d = null; }
+    v.remove();
+    if (!desdeHistorial && history.state?.v3d) history.back();
+}
+// El boton "atras" del movil cierra la ventana 3D en vez de salir de la app
+window.addEventListener("popstate", () => cerrarCuenca3D(true));
+document.addEventListener("keydown", e => { if (e.key === "Escape") cerrarCuenca3D(); });
 
 // --- Capa de lluvia acumulada en el mapa ---
 const LLUVIA_ESCALA = [   // [desde mm, color]
