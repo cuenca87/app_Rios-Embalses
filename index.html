@@ -27,6 +27,7 @@ body { font-family:'Segoe UI',Arial,sans-serif; display:flex; height:100vh; heig
     border-bottom:1px solid #0f3460; background:#FDD835; flex-shrink:0;
 }
 #sidebar-header img { height:40px; }
+#btn-panel { display:none; }
 #sidebar-header h2 { font-size:13px; color:#1a1a2e; line-height:1.3; margin:0; }
 #sidebar-header small { color:#333; }
 .search-box { padding:14px 16px; flex-shrink:0; }
@@ -167,6 +168,12 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
     #sidebar-header img { height:28px; }
     #sidebar-header h2 { font-size:10px; }
     #sidebar-header { padding:6px 10px; gap:8px; }
+    /* Panel plegable: plegado solo queda la cabecera y el mapa ocupa el resto */
+    #btn-panel { display:block; margin-left:auto; border:1px solid #1a1a2e33; background:#fff8; border-radius:4px;
+        font-size:14px; padding:2px 12px; color:#1a1a2e; cursor:pointer; }
+    #btn-panel.nuevo { background:#1565C0; color:#fff; font-size:12px; font-weight:600; }
+    body.panel-min #sidebar { height:auto; min-height:0; overflow:hidden; }
+    body.panel-min #sidebar > :not(#sidebar-header) { display:none !important; }
     .tab-btn { font-size:10px; padding:7px 2px; }
     .tab-content { padding:8px 10px; }
     #result-panel h3 { padding:6px 10px 2px; font-size:10px; }
@@ -195,6 +202,7 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
     <div id="sidebar-header">
         <img src="https://www.miteco.gob.es/content/experience-fragments/miteco/language-masters/es/site/header/master-es/_jcr_content/root/header_container/logoImage.coreimg.svg/1764659487766/header-logo.svg" alt="MITECO">
         <h2>Buscador Hidrologico<br><small>Rios y embalses de Espana</small></h2>
+        <button id="btn-panel" onclick="plegarPanel()" title="Plegar o desplegar el panel">▼</button>
     </div>
 
     <div class="tab-bar">
@@ -1942,6 +1950,20 @@ function lluviaAutomatica() {
     if (bts.length) bts[bts.length - 1].click();
 }
 
+// --- Panel plegable en el movil ---
+function plegarPanel() {
+    const min = document.body.classList.toggle("panel-min"), b = document.getElementById("btn-panel");
+    b.textContent = min ? "▲" : "▼";
+    b.classList.remove("nuevo");
+    setTimeout(() => map.invalidateSize(), 60);
+}
+// Con el panel plegado, un resultado nuevo se avisa en el boton en vez de quedar oculto
+new MutationObserver(() => {
+    if (!document.body.classList.contains("panel-min")) return;
+    const b = document.getElementById("btn-panel");
+    b.textContent = "▲ Ver resultado"; b.classList.add("nuevo");
+}).observe(document.getElementById("result-box"), { childList: true, characterData: true, subtree: true });
+
 // --- Ventana de la cuenca en 3D (MapLibre + relieve) ---
 const BOTON_3D = `<button class="action" onclick="abrirCuenca3D()" style="background:linear-gradient(135deg,#33691E,#7CB342);">🏔️ Ver la cuenca en 3D</button>`;
 const MAPLIBRE = "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl";
@@ -1978,6 +2000,7 @@ ${dato("Rio", info.rio ? escapeHtml(info.rio) : null)}${dato("Cota maxima", info
 <label>Fondo</label><div class="v3d-bts" id="v3d-fondo"><button data-f="orto" class="on">Ortofoto</button><button data-f="mapa">Mapa IGN</button></div>
 <label>Vista</label><div class="v3d-bts"><button id="v3d-giro">⟳ Girar</button><button id="v3d-reset">Encuadrar</button><button id="v3d-planta">Planta</button><button id="v3d-rios" class="on">Red fluvial</button></div>
 <label>Lluvia por radar</label><div class="v3d-bts" id="v3d-ll">${[0, 1, 3, 6, 12, 24].map(h => `<button data-h="${h}"${h ? "" : ' class="on"'}>${h ? h + " h" : "No"}</button>`).join("")}</div>
+<div id="v3d-llop" style="display:none;">Opacidad de la lluvia: <span id="v3d-llopv">50 %</span><input type="range" id="v3d-llopr" min="10" max="100" step="5" value="50"></div>
 <div id="v3d-llinfo" class="r-info" style="white-space:pre-wrap;"></div>
 <p class="r-info" style="font-size:10px;margin-top:10px;">Arrastre para mover; con dos dedos o el boton derecho, gire e incline. Pulse en el mapa para ver la cota (MDT del IGN).<br>Relieve 3D: Terrain Tiles de AWS (SRTM / EU-DEM, ~30 m). Ortofoto PNOA, mapa y red hidrografica © IGN. Cuenca: MITECO.</p>`;
     try {
@@ -2081,20 +2104,47 @@ ${dato("Rio", info.rio ? escapeHtml(info.rio) : null)}${dato("Cota maxima", info
     });
 
     // Lluvia por radar sobre el relieve
-    const llInfo = document.getElementById("v3d-llinfo");
+    const llInfo = document.getElementById("v3d-llinfo"), llOp = document.getElementById("v3d-llopr");
+    // Con relieve, MapLibre no aplica raster-opacity a las capas de imagen: la transparencia
+    // se pone en el canal alfa de la propia imagen
+    let llImg = null, llPend = null;
+    const [[bs, bw], [bn, be]] = LLUVIA_BOUNDS, llCoords = [[bw, bn], [be, bn], [be, bs], [bw, bs]];
+    const conAlfa = async (url, f) => {
+        const im = new Image(); im.src = url; await im.decode();
+        const cv = document.createElement("canvas"); cv.width = im.width; cv.height = im.height;
+        const cx = cv.getContext("2d"); cx.drawImage(im, 0, 0);
+        const px = cx.getImageData(0, 0, cv.width, cv.height), a = px.data;
+        for (let i = 3; i < a.length; i += 4) a[i] = Math.round(a[i] * f);
+        cx.putImageData(px, 0, 0);
+        return cv.toDataURL("image/png");
+    };
+    llOp.oninput = () => {
+        document.getElementById("v3d-llopv").textContent = llOp.value + " %";
+        if (!llImg || llPend) return;
+        llPend = setTimeout(async () => {
+            const url = await conAlfa(llImg, llOp.value / 100);
+            llPend = null;
+            m.getSource("lluvia")?.updateImage({ url, coordinates: llCoords });
+        }, 120);
+    };
     document.querySelectorAll("#v3d-ll button").forEach(b => b.onclick = async () => {
         document.querySelectorAll("#v3d-ll button").forEach(x => x.classList.toggle("on", x === b));
         const h = +b.dataset.h;
         if (m.getLayer("lluvia")) m.removeLayer("lluvia");
         if (m.getSource("lluvia")) m.removeSource("lluvia");
+        document.getElementById("v3d-llop").style.display = h ? "" : "none";
         if (!h) { llInfo.textContent = ""; return; }
         try {
             llInfo.textContent = "Leyendo el radar...";
             const d = await cargarLluvia((k, t) => { llInfo.textContent = `Leyendo el radar... ${k}/${t} h`; });
             if (mapa3d !== m || !b.classList.contains("on")) return;
-            const img = imagenLluvia(d, h), [[bs, bw], [bn, be]] = LLUVIA_BOUNDS;
-            m.addSource("lluvia", { type: "image", url: img.url, coordinates: [[bw, bn], [be, bn], [be, bs], [bw, bs]] });
-            m.addLayer({ id: "lluvia", type: "raster", source: "lluvia", paint: { "raster-opacity": 0.75, "raster-resampling": "nearest" } }, "mascara");
+            llImg = imagenLluvia(d, h).url;
+            const url = await conAlfa(llImg, llOp.value / 100);
+            if (mapa3d !== m || !b.classList.contains("on")) return;
+            if (m.getLayer("lluvia")) m.removeLayer("lluvia");
+            if (m.getSource("lluvia")) m.removeSource("lluvia");
+            m.addSource("lluvia", { type: "image", url, coordinates: llCoords });
+            m.addLayer({ id: "lluvia", type: "raster", source: "lluvia", paint: { "raster-resampling": "nearest" } }, "mascara");
             const celdas = celdasCuenca(d, c.geom);
             let mm = null;
             if (celdas) {
