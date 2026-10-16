@@ -1482,7 +1482,7 @@ function resumenUnidades(unidades, rioPrincipal) {
     return { area, cotaMax: isFinite(cotaMax) ? cotaMax : null, sumCota, afluentes, n: unidades.length, bbox: isFinite(bbox[0]) ? bbox : null };
 }
 
-const fmtKm2 = a => a >= 100 ? a.toLocaleString("es-ES", { maximumFractionDigits: 0 }) : a.toLocaleString("es-ES", { maximumFractionDigits: 2 });
+const fmtKm2 = a => numES(a, a >= 100 ? 0 : 2);
 
 function dibujarCuenca(geom, punto, tramo, info, extension) {
     const feats = [];
@@ -1833,21 +1833,25 @@ function graficoLluvia(serie) {
     serie.forEach((s, i) => {
         const x = m.l + i * bw;
         if (s.media == null) svg += `<rect x="${x + 1}" y="${m.t}" width="${bw - 2}" height="${H - m.t - m.b}" fill="#ffffff" opacity="0.05"><title>${s.etiqueta}: sin datos</title></rect>`;
-        else svg += `<rect x="${x + 1}" y="${y(s.media)}" width="${Math.max(bw - 2, 1)}" height="${H - m.b - y(s.media)}" fill="#29B6F6"><title>${s.etiqueta}: ${s.media.toFixed(1)} mm (max ${s.max.toFixed(1)})</title></rect>`;
+        else svg += `<rect x="${x + 1}" y="${y(s.media)}" width="${Math.max(bw - 2, 1)}" height="${H - m.b - y(s.media)}" fill="#29B6F6"><title>${s.etiqueta}: ${fmtMm(s.media)} mm (max ${fmtMm(s.max)})</title></rect>`;
         if (i % 6 === (n - 1) % 6) svg += `<text x="${x + bw / 2}" y="${H - 5}" text-anchor="middle">${s.hora}</text>`;
     });
     return svg + "</svg>";
 }
-const fmtMm = v => v == null ? "-" : v === 0 ? "0" : v < 0.05 ? "<0.1" : v < 10 ? v.toFixed(1) : v.toFixed(0);
+const fmtMm = v => v == null ? "-" : v === 0 ? "0" : v < 0.05 ? "<0,1" : v < 10 ? v.toFixed(1).replace(".", ",") : v.toFixed(0);
 // Volumen caido sobre la cuenca: 1 mm sobre 1 km² = 1.000 m³ = 1 millon de litros
+// Numero en español con punto de miles tambien en las cifras de 4 digitos (toLocaleString no lo pone)
+function numES(v, dec = 0) {
+    const [e, d] = v.toFixed(dec).split(".");
+    return e.replace(/\B(?=(\d{3})+$)/g, ".") + (d && +d ? "," + d.replace(/0+$/, "") : "");
+}
 function fmtVolumen(mm, km2) {
     const m3 = mm * km2 * 1000;
     if (!(m3 > 0)) return "";
-    const n = (v, d) => v.toLocaleString("es-ES", { maximumFractionDigits: v < 10 ? d : 0 });
-    const vol = m3 >= 1e6 ? `${n(m3 / 1e6, 2)} hm³` : `${n(m3, 0)} m³`;
+    const vol = m3 >= 1e6 ? `${numES(m3 / 1e6, m3 < 1e7 ? 2 : m3 < 1e8 ? 1 : 0)} hm³` : `${numES(m3)} m³`;
     const l = m3 * 1000;
-    const lit = l >= 1e12 ? `${n(l / 1e12, 1)} billones de litros` : l >= 1e9 ? `${String(Math.round(l / 1e8) * 100).replace(/\B(?=(\d{3})+$)/g, ".")} millones de litros`
-        : l >= 1e6 ? `${n(l / 1e6, 1)} millones de litros` : `${n(l, 0)} litros`;
+    const lit = l >= 1e12 ? `${numES(l / 1e12, 2)} billones de litros` : l >= 1e9 ? `${numES(Math.round(l / 1e7) * 10)} millones de litros`
+        : l >= 1e6 ? `${numES(l / 1e6, l < 1e7 ? 1 : 0)} millones de litros` : `${numES(l)} litros`;
     return `${vol} · ${lit}`;
 }
 
@@ -1883,6 +1887,13 @@ async function lluviaRadarCuenca(boton) {
 <span class="r-name">${fmtMm(ult.media)} mm</span> <span class="r-info">en la ultima hora${ult.media != null ? ` · maximo en una celda: ${fmtMm(ult.max)} mm` : ""}</span>
 <span class="r-info">Acumulado (lamina media → volumen caido sobre ${fmtKm2(km2)} km²):</span>
   ${filas.join("\n  ")}`;
+        // Explicacion de la cuenta con el acumulado de 24 h (o el mayor de los periodos con lluvia)
+        const ej = [24, 12, 6, 3, 1].map(hh => ({ hh, mm: acum(hh).mm })).find(a => a.mm >= 0.01);
+        if (ej) {
+            const dec = (v, d) => v.toLocaleString("es-ES", { minimumFractionDigits: d, maximumFractionDigits: d });
+            h += `\n<span class="r-info" style="font-size:11px;">Como se calcula: 1 mm de lluvia = 1 litro por m², en cualquier punto (la celda de 2 km es solo la resolucion del radar). `
+                + `En ${ej.hh} h: ${dec(ej.mm, 2)} L/m² × ${fmtKm2(km2)} km² (${fmtKm2(km2)} millones de m²) = ${fmtVolumen(ej.mm, km2).split(" · ")[1]}.</span>`;
+        }
         h += graficoLluvia(serie);
         const avisos = [];
         if (celdas.centroide) avisos.push("La cuenca es menor que una celda del radar (2 km): se da el valor de la celda que la contiene.");
