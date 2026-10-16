@@ -2349,6 +2349,10 @@ function alternarCapaLluvia() {
         const div = L.DomUtil.create("div", "ll-leyenda");
         L.DomEvent.disableClickPropagation(div);
         div.addEventListener("click", ev => {
+            // La leyenda se redibuja al cambiar de periodo y el boton pulsado sale del DOM:
+            // Leaflet ya no sabria que el clic venia de la leyenda y lo tomaria como un
+            // clic en el mapa (popup de lluvia del punto). Se corta aqui.
+            ev.stopPropagation();
             const h = +ev.target.dataset?.h;
             if (h) { lluviaHorasSel = h; pintarCapaLluvia(); }
         });
