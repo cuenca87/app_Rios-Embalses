@@ -992,7 +992,9 @@ async function analizarEmbalse() {
 const MITECO_WMS = "https://gis.miteco.gob.es/geoserver/agua/wms";
 const OGC_CUENCA_RIO = MITECO_OGC_BASE + "collections/agua:subcuencas_rios_comp_pfaf/items";
 const IGN_WCS_MDT = "https://servicios.idee.es/wcs-inspire/mdt";
-const CUENCA_GEOM_MAX = 800;     // por encima, el contorno se dibuja con el WMS de MITECO
+// Hasta aqui se unen los poligonos de las subcuencas; por encima, el contorno sale
+// de una imagen del WMS de MITECO (unir 300 poligonos con turf tarda ~10 s; la imagen, ~1 s)
+const CUENCA_GEOM_MAX = 40;
 const MDT_MAX_CELDAS = 4e6;      // 5 m hasta ~100 km2 de tramo; si no, 25 m
 const ATRIB_UNIDAD = "cod_pfafcuen,cod_pfafrio,nom_rio,area_ctr_km2,area_cu_km2,cota_max,cota_min,cota_med";
 let cuencaLayer = null, cuencaWms = null, cuencaPicking = false;
@@ -1064,6 +1066,75 @@ async function wfsUnidades(cql, conGeom) {
     const d = await resp.json();
     (d.features || []).forEach(f => { if (f.properties.nom_rio) f.properties.nom_rio = f.properties.nom_rio.trim(); });
     return d.features || [];
+}
+
+// Tabla precalculada de subcuencas (cuencas/<grupo>.json, generada con
+// cuencas/build_tabla.py a partir del WFS de MITECO). Ordenadas por codigo, las
+// unidades aguas arriba son unos pocos rangos seguidos: se sacan con busqueda
+// binaria sin preguntar al servidor. Todo lo que drena a una unidad comparte su
+// grupo (4 primeras cifras en los codigos 100/200, 3 en el resto).
+const CUENCAS_VER = "2026-10-16";
+const tablasPfaf = new Map();
+const grupoPfaf = c => (c.startsWith("100") || c.startsWith("200")) ? c.slice(0, 4) : c.slice(0, 3);
+function tablaPfaf(g) {
+    if (!tablasPfaf.has(g)) {
+        const p = fetch(`cuencas/${g}.json?v=${CUENCAS_VER}`).then(r => {
+            if (!r.ok) throw new Error(`tabla de subcuencas ${g}: ${r.status}`);
+            return r.json();
+        }).then(t => {
+            const n = t.c.length, b = new Float64Array(4 * n);
+            let x0 = 0, y0 = 0;
+            for (let i = 0; i < n; i++) {
+                x0 += t.b[4 * i]; y0 += t.b[4 * i + 1];
+                b[4 * i] = x0 / 1000; b[4 * i + 1] = y0 / 1000;
+                b[4 * i + 2] = (x0 + t.b[4 * i + 2]) / 1000; b[4 * i + 3] = (y0 + t.b[4 * i + 3]) / 1000;
+            }
+            t.b = b;
+            return t;
+        });
+        p.catch(() => tablasPfaf.delete(g));
+        tablasPfaf.set(g, p);
+    }
+    return tablasPfaf.get(g);
+}
+function primeraPos(cods, v) {   // primer indice con cods[i] >= v
+    let lo = 0, hi = cods.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (cods[m] < v) lo = m + 1; else hi = m; }
+    return lo;
+}
+// Mismos registros (y propiedades) que devolveria wfsUnidades sin geometria
+function unidadTabla(t, i) {
+    const r = t.rios[t.r[i]];
+    return {
+        properties: {
+            cod_pfafcuen: t.c[i], cod_pfafrio: r[0], nom_rio: r[1], area_ctr_km2: t.a[i], area_cu_km2: r[2],
+            cota_max: t.zx[i], cota_med: t.zm[i]
+        },
+        bbox: [t.b[4 * i], t.b[4 * i + 1], t.b[4 * i + 2], t.b[4 * i + 3]]
+    };
+}
+// Unidades en [desde, hasta] (codigos), leidas de la tabla
+async function unidadesTablaRangos(g, rangos) {
+    const t = await tablaPfaf(g), out = [];
+    for (const [desde, hasta] of rangos)
+        for (let i = primeraPos(t.c, desde); i < t.c.length && t.c[i] <= hasta; i++) out.push(unidadTabla(t, i));
+    return out;
+}
+const PFAF_TOPE = "9999999999999999999";
+// Todo lo que hay aguas arriba de la unidad (cuencas cerradas incluidas), como pfafCqlAguasArriba(code, rio, false)
+function unidadesAguasArriba(code, rio) {
+    let k = code.length;
+    while (k > 0 && +code[k - 1] % 2 === 1) k--;
+    if (rio && code.startsWith(rio)) k = Math.max(k, rio.length);
+    const rangos = [];
+    for (let i = k; i < code.length; i++) {
+        if (code[i] === "9") continue;
+        const pre = code.slice(0, i);
+        rangos.push([pre + (+code[i] + 1), pre + PFAF_TOPE]);
+    }
+    if (!rangos.length) return Promise.resolve([]);
+    return unidadesTablaRangos(grupoPfaf(code), rangos)
+        .catch(e => { console.warn("Tabla de subcuencas no disponible, se usa el WFS:", e.message); return wfsUnidades(pfafCqlAguasArriba(code, rio, false), false); });
 }
 
 function lineasDe(f) {
@@ -1447,11 +1518,11 @@ async function calcularCuencaPunto(lon, lat, opts = {}) {
             tramo = t.tramo; distKm = t.distKm;
         }
         const U = tramo.properties.cod_pfafcuen, rioU = tramo.properties.cod_pfafrio;
-        showProgress(15, "Consultando subcuencas aguas arriba (MITECO)...");
+        showProgress(15, "Buscando las subcuencas aguas arriba...");
         const cqlArriba = pfafCqlAguasArriba(U, rioU, true);
         const [propias, rango] = await Promise.all([
             wfsUnidades(`cod_pfafcuen = '${U}'`, true),
-            cqlArriba ? wfsUnidades(pfafCqlAguasArriba(U, rioU, false), false) : Promise.resolve([])
+            unidadesAguasArriba(U, rioU)
         ]);
         const arriba = rango.filter(f => !esCuencaCerrada(f.properties.cod_pfafcuen, rioU));
         const cerradas = rango.filter(f => esCuencaCerrada(f.properties.cod_pfafcuen, rioU));
@@ -1484,14 +1555,15 @@ async function calcularCuencaPunto(lon, lat, opts = {}) {
             try {
                 const c = await contornoPorImagen(cqlArriba, sr.bbox);
                 geom = disolver([turf.feature(c.geom.geometry), turf.feature(partePropia.geometry)]);
-                notaGeom = `Cuenca grande (${sr.n.toLocaleString("es-ES")} subcuencas): el contorno se obtiene de una imagen de MITECO con unos ${c.resM} m de pixel. La superficie se calcula con las subcuencas, no con el contorno.`;
+                notaGeom = `El contorno se obtiene de una imagen de las ${sr.n.toLocaleString("es-ES")} subcuencas de MITECO con unos ${c.resM} m de pixel. La superficie se calcula con las subcuencas, no con el contorno.`;
             } catch (e) {
                 mostrarWmsUnidades(cqlArriba);
                 geom = null;
                 notaGeom = `No se pudo obtener el contorno (${e.message}): se muestran las ${sr.n.toLocaleString("es-ES")} subcuencas con el servicio de mapas de MITECO.`;
             }
         }
-        const cotaPunto = await getElevation(punto[0], punto[1]);
+        // El servicio de cotas del IGN a veces tarda >8 s: la cota es informativa, no se espera mas de 4 s
+        const cotaPunto = await Promise.race([getElevation(punto[0], punto[1]), new Promise(r => setTimeout(() => r(null), 4000))]);
         const cotaMax = Math.max(sr.cotaMax ?? -Infinity, +propia.properties.cota_max || -Infinity);
         const cotaMed = (sr.sumCota + areaPropia * (+propia.properties.cota_med || 0)) / area;
         const demar = findDemarcacion(punto[0], punto[1]);
@@ -1542,7 +1614,10 @@ async function cuencaRioCompleto() {
         const filtro = encodeURIComponent(`cod_pfafrio = '${R}'`);
         const [resp, unidades] = await Promise.all([
             fetch(`${OGC_CUENCA_RIO}?f=json&limit=5&filter=${filtro}&filter-lang=cql-text`),
-            wfsUnidades(`cod_pfafcuen BETWEEN '${R}' AND '${R}9999999999999999999'`, false)
+            (R.length >= grupoPfaf(R).length
+                ? unidadesTablaRangos(grupoPfaf(R), [[R, R + PFAF_TOPE]])
+                : Promise.reject(new Error("rio sin tabla")))
+                .catch(() => wfsUnidades(`cod_pfafcuen BETWEEN '${R}' AND '${R}${PFAF_TOPE}'`, false))
         ]);
         if (!resp.ok) throw new Error(`API error: ${resp.status}`);
         const cuenca = (await resp.json()).features?.[0];
