@@ -15,6 +15,12 @@
 //   agua/wms?...request=GetMap               -> imagen de las subcuencas que la cuenca
 //                                   vertiente lee pixel a pixel para sacar el contorno
 //                                   (un canvas no puede leer imagenes sin CORS)
+//   opera/AAAA/MM/DD/OPERA/COMP/OPERA@AAAAMMDDTHHMM@0@ACRR.tiff
+//                                 -> compuesto europeo de lluvia acumulada en 1 h
+//                                   (EUMETNET OPERA, CC BY 4.0) del almacen S3 abierto
+//                                   de OPERA, que no envia cabeceras CORS. Se reenvia
+//                                   la cabecera Range: la app lee solo las teselas
+//                                   del GeoTIFF que cubren la cuenca.
 //
 // Solo GET, solo esas rutas (no es un proxy abierto) y solo desde ALLOWED_ORIGINS.
 // Los mosaicos de imagen para ver en el mapa (GetMap/GetTile) NO pasan por aqui:
@@ -31,14 +37,33 @@ const ALLOWED_ORIGINS = [
 // Los datos de referencia cambian muy poco: cache de una hora en el borde.
 const CACHE_SECONDS = 3600;
 
+const OPERA_S3 = "https://s3.waw3-1.cloudferro.com/openradar-24h/";
+const OPERA_RUTA = /^opera\/(\d{4}\/\d{2}\/\d{2}\/OPERA\/COMP\/OPERA@\d{8}T\d{4}@0@ACRR\.tiff)$/;
+
 function corsHeaders(origin) {
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Methods": "GET, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Accept",
+    "Access-Control-Allow-Headers": "Content-Type, Accept, Range",
+    "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
     "Access-Control-Max-Age": "86400",
     "Vary": "Origin",
   };
+}
+
+// Ficheros de OPERA: no cambian una vez publicados. Cloudflare guarda el fichero
+// entero en cache y sirve los rangos desde ahi. Los que aun no existen (404) no se
+// guardan, para que aparezcan en cuanto OPERA los publique.
+async function operaFichero(clave, request, origin, allowed) {
+  const init = { cf: { cacheEverything: true, cacheTtlByStatus: { "200-299": 86400, "404": 0, "500-599": 0 } } };
+  const range = request.headers.get("Range");
+  if (range) init.headers = { Range: range };
+  const upstream = await fetch(OPERA_S3 + clave, init);
+  const resp = new Response(upstream.body, upstream);
+  if (allowed) {
+    for (const [k, v] of Object.entries(corsHeaders(origin))) resp.headers.set(k, v);
+  }
+  return resp;
 }
 
 // Devuelve la ruta en el GeoServer de MITECO, o null si no esta permitida.
@@ -68,6 +93,8 @@ export default {
     }
 
     const url = new URL(request.url);
+    const opera = url.pathname.replace(/^\/+/, "").match(OPERA_RUTA);
+    if (opera) return operaFichero(opera[1], request, origin, allowed);
     const ruta = rutaPermitida(url.pathname.replace(/^\/+/, ""), url.searchParams);
     if (!ruta) {
       return new Response("Ruta no permitida", { status: 404 });

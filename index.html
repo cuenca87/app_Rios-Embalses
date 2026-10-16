@@ -1000,6 +1000,7 @@ const ATRIB_UNIDAD = "cod_pfafcuen,cod_pfafrio,nom_rio,area_ctr_km2,area_cu_km2,
 let cuencaLayer = null, cuencaWms = null, cuencaPicking = false;
 
 function quitarCapaCuenca() {
+    cuencaActual = null;
     if (cuencaLayer) { map.removeLayer(cuencaLayer); cuencaLayer = null; }
     if (cuencaWms) { map.removeLayer(cuencaWms); cuencaWms = null; }
 }
@@ -1465,6 +1466,7 @@ const fmtKm2 = a => a >= 100 ? a.toLocaleString("es-ES", { maximumFractionDigits
 function dibujarCuenca(geom, punto, tramo, info, extension) {
     const feats = [];
     if (geom) feats.push(...(geom.type === "FeatureCollection" ? geom.features : [geom]).map(f => ({ ...f, properties: { ...info, tipo: "cuenca" } })));
+    cuencaActual = feats.length ? { geom: turf.featureCollection(feats) } : null;
     cuencaLayer = L.featureGroup().addTo(map);
     if (feats.length) L.geoJSON(turf.featureCollection(feats), { style: () => ({ color: "#FFEB3B", weight: 2.5, fillColor: "#00BCD4", fillOpacity: 0.22 }) }).addTo(cuencaLayer);
     if (tramo) L.geoJSON(tramo, { style: () => ({ color: "#00E5FF", weight: 4 }) }).addTo(cuencaLayer);
@@ -1595,6 +1597,7 @@ async function calcularCuencaPunto(lon, lat, opts = {}) {
         if (avisoMdt) h += `\n\n<span style="color:#FFB74D;">${escapeHtml(avisoMdt)}</span>`;
         if (notaGeom) h += `\n\n<span class="r-info">${notaGeom}</span>`;
         h += `\n\n<span class="r-info" style="font-size:11px;">Fuente: subcuencas Pfafstetter por tramo (MITECO) y MDT 5 m (IGN).</span>`;
+        if (cuencaActual) h += BOTON_LLUVIA;
         pintar(h);
         showProgress(100, "Completado");
     } catch (e) {
@@ -1633,6 +1636,7 @@ async function cuencaRioCompleto() {
 <span class="r-label">Subcuencas Pfafstetter:</span> ${sr.n.toLocaleString("es-ES")}`;
         if (sr.afluentes.length) h += `\n\n<span class="r-label">Afluentes principales:</span>` + sr.afluentes.map(r => `\n  - ${escapeHtml(r.nombre)} <span class="r-info">(${fmtKm2(r.area)} km²)</span>`).join("");
         h += `\n<span class="r-info" style="font-size:11px;">Para la cuenca en un punto concreto del rio, use la pestaña 💧 Cuenca.</span>`;
+        if (cuencaActual) h += BOTON_LLUVIA;
         const box = document.getElementById("result-box");
         box.innerHTML = box.innerHTML.replace(/\n\n<span class="r-label">Calculando cuenca vertiente del rio\.\.\.<\/span>$/, "") + h;
         showProgress(100, "Completado");
@@ -1672,6 +1676,153 @@ async function cuencaEmbalse() {
     } catch (e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${escapeHtml(e.message)}</span>`); }
     finally { hideProgress(); btn.disabled = false; }
 }
+
+// --- Lluvia estimada por radar en la cuenca ---
+// Compuesto europeo OPERA NIMBUS de lluvia acumulada en 1 h (EUMETNET, CC BY 4.0):
+// mm en celdas de 2 km (LAEA), uno nuevo cada 15 min (~12 min despues del final
+// de la hora) y se guardan 24 h. Incluye 10 de los 15 radares de AEMET, ademas
+// de los de Portugal y Francia. Se lee a traves del proxy, que reenvia los rangos:
+// de cada fichero solo se descargan las teselas que tocan la cuenca.
+const OPERA_PROXY = MITECO_PROXY + "opera/";
+const OPERA_NODATA = -9999000, OPERA_UNDETECT = -8888000;   // sin cobertura / sin lluvia
+const LLUVIA_HORAS = 24;
+let cuencaActual = null;   // { geom, titulo } de la ultima cuenca dibujada
+
+const pad2 = n => String(n).padStart(2, "0");
+function operaUrl(fin) {   // fin: Date (UTC) del final del acumulado
+    const d = `${fin.getUTCFullYear()}${pad2(fin.getUTCMonth() + 1)}${pad2(fin.getUTCDate())}`;
+    return `${OPERA_PROXY}${d.slice(0, 4)}/${d.slice(4, 6)}/${d.slice(6)}/OPERA/COMP/OPERA@${d}T${pad2(fin.getUTCHours())}${pad2(fin.getUTCMinutes())}@0@ACRR.tiff`;
+}
+async function abrirOpera(fin, intentos = 2) {
+    for (let k = 0; k < intentos; k++) {
+        try { return await (await GeoTIFF.fromUrl(operaUrl(fin), { allowFullFile: false })).getImage(); }
+        catch { }   // aun no publicado, ya borrado (solo hay 24 h) o fallo de red
+    }
+    return null;
+}
+// Celdas de la rejilla OPERA cuyo centro cae dentro de la cuenca (o la que
+// contiene el centroide, si la cuenca es menor que una celda)
+function celdasCuenca(img, geom) {
+    proj4.defs("OPERA", "+proj=laea +lat_0=55 +lon_0=10 +x_0=1950000 +y_0=-2100000 +ellps=WGS84 +units=m +no_defs");
+    const [ox, oy] = img.getOrigin(), [rx, ry] = img.getResolution(), W = img.getWidth(), H = img.getHeight();
+    const [w, s, e, n] = turf.bbox(geom);
+    const esquinas = [[w, s], [w, n], [e, s], [e, n], [(w + e) / 2, s], [(w + e) / 2, n], [w, (s + n) / 2], [e, (s + n) / 2]]
+        .map(c => proj4("EPSG:4326", "OPERA", c));
+    const col = x => Math.floor((x - ox) / rx), fil = y => Math.floor((y - oy) / ry);
+    const c0 = Math.max(0, Math.min(...esquinas.map(p => col(p[0]))) - 1), c1 = Math.min(W - 1, Math.max(...esquinas.map(p => col(p[0]))) + 1);
+    const f0 = Math.max(0, Math.min(...esquinas.map(p => fil(p[1]))) - 1), f1 = Math.min(H - 1, Math.max(...esquinas.map(p => fil(p[1]))) + 1);
+    if (c0 > c1 || f0 > f1) return null;
+    const ventana = [c0, f0, c1 + 1, f1 + 1], ancho = c1 - c0 + 1;
+    // Para el punto-en-poligono basta un contorno simplificado (~200 m)
+    const polis = (geom.type === "FeatureCollection" ? geom.features : [geom])
+        .map(f => turf.simplify(turf.feature(f.geometry || f), { tolerance: 0.002, highQuality: false }));
+    const dentro = [];
+    for (let f = f0; f <= f1; f++) for (let c = c0; c <= c1; c++) {
+        const ll = proj4("OPERA", "EPSG:4326", [ox + (c + 0.5) * rx, oy + (f + 0.5) * ry]);
+        const pt = turf.point(ll);
+        if (polis.some(p => turf.booleanPointInPolygon(pt, p))) dentro.push((f - f0) * ancho + (c - c0));
+    }
+    let centroide = false;
+    if (!dentro.length) {
+        const [x, y] = proj4("EPSG:4326", "OPERA", turf.centroid(geom).geometry.coordinates);
+        const c = col(x), f = fil(y);
+        if (c < c0 || c > c1 || f < f0 || f > f1) return null;
+        dentro.push((f - f0) * ancho + (c - c0)); centroide = true;
+    }
+    return { ventana, dentro, centroide };
+}
+async function lluviaHora(img, celdas) {
+    // mm; -9999000 = sin cobertura; NaN en el GeoTIFF = hay radar y no llueve.
+    // (La banda 2, de calidad, sale 0 tambien en celdas cubiertas: no sirve para la cobertura.)
+    const [v] = await img.readRasters({ window: celdas.ventana, samples: [0] });
+    let suma = 0, max = 0, cubiertas = 0;
+    for (const i of celdas.dentro) {
+        const x = v[i];
+        if (x === OPERA_NODATA) continue;
+        const mm = x > 0 ? x : 0;   // NaN / OPERA_UNDETECT: sin lluvia
+        suma += mm; cubiertas++; if (mm > max) max = mm;
+    }
+    return { media: cubiertas ? suma / cubiertas : null, max, cobertura: cubiertas / celdas.dentro.length };
+}
+// Grafico de barras de las ultimas horas (media sobre la cuenca, mm/h)
+function graficoLluvia(serie) {
+    const W = 320, H = 110, m = { l: 26, r: 6, t: 8, b: 18 }, n = serie.length;
+    const vmax = Math.max(1, ...serie.map(s => s.media || 0)), bw = (W - m.l - m.r) / n;
+    const y = v => m.t + (H - m.t - m.b) * (1 - v / vmax);
+    let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block;margin-top:4px;" font-size="9" fill="#8892b0">`;
+    svg += `<line x1="${m.l}" y1="${H - m.b}" x2="${W - m.r}" y2="${H - m.b}" stroke="#0f3460"/>`;
+    [0, vmax / 2, vmax].forEach(v => svg += `<text x="${m.l - 3}" y="${y(v) + 3}" text-anchor="end">${v.toFixed(v < 10 && v % 1 ? 1 : 0)}</text>`);
+    serie.forEach((s, i) => {
+        const x = m.l + i * bw;
+        if (s.media == null) svg += `<rect x="${x + 1}" y="${m.t}" width="${bw - 2}" height="${H - m.t - m.b}" fill="#ffffff" opacity="0.05"><title>${s.etiqueta}: sin datos</title></rect>`;
+        else svg += `<rect x="${x + 1}" y="${y(s.media)}" width="${Math.max(bw - 2, 1)}" height="${H - m.b - y(s.media)}" fill="#29B6F6"><title>${s.etiqueta}: ${s.media.toFixed(1)} mm (max ${s.max.toFixed(1)})</title></rect>`;
+        if (i % 6 === (n - 1) % 6) svg += `<text x="${x + bw / 2}" y="${H - 5}" text-anchor="middle">${s.hora}</text>`;
+    });
+    return svg + "</svg>";
+}
+const fmtMm = v => v == null ? "-" : v === 0 ? "0" : v < 0.05 ? "<0.1" : v < 10 ? v.toFixed(1) : v.toFixed(0);
+
+async function lluviaRadarCuenca(boton) {
+    if (!cuencaActual) return;
+    const { geom } = cuencaActual;
+    if (boton) boton.disabled = true;
+    const salida = document.createElement("span");
+    boton?.insertAdjacentElement("afterend", salida);
+    const escribir = h => { salida.innerHTML = h; };
+    escribir(`\n<span class="r-info">Leyendo el radar...</span>`);
+    try {
+        await cargarLibsMdt();
+        // Ultimo compuesto publicado: se prueba hacia atras de 15 en 15 min
+        let fin = new Date(Math.floor((Date.now() - 10 * 60000) / 900000) * 900000), img = null;
+        for (let k = 0; k < 6 && !img; k++) { img = await abrirOpera(fin, 1); if (!img) fin = new Date(fin - 900000); }
+        if (!img) throw new Error("no hay compuestos de OPERA disponibles");
+        const celdas = celdasCuenca(img, geom);
+        if (!celdas) throw new Error("la cuenca queda fuera de la rejilla de OPERA");
+        // Acumulados horarios que no se solapan: fin, fin-1h, ..., fin-23h
+        const fines = Array.from({ length: LLUVIA_HORAS }, (_, i) => new Date(fin - i * 3600000));
+        const serie = new Array(LLUVIA_HORAS);
+        let hechas = 0, sig = 0;
+        const trabajador = async () => {
+            while (sig < fines.length) {
+                const i = sig++;
+                const im = i === 0 ? img : await abrirOpera(fines[i]);
+                let r = { media: null, max: 0, cobertura: 0 };
+                if (im) { try { r = await lluviaHora(im, celdas); } catch { } }
+                const loc = fines[i].toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+                serie[LLUVIA_HORAS - 1 - i] = { ...r, hora: loc, etiqueta: `Hasta las ${loc}` };
+                escribir(`\n<span class="r-info">Leyendo el radar... ${++hechas}/${LLUVIA_HORAS} h</span>`);
+            }
+        };
+        await Promise.all(Array.from({ length: 6 }, trabajador));
+        const ult = serie[LLUVIA_HORAS - 1];
+        const acum = h => {
+            const tramo = serie.slice(-h), ok = tramo.filter(s => s.media != null);
+            return { mm: ok.reduce((a, s) => a + s.media, 0), faltan: h - ok.length };
+        };
+        const finTxt = fin.toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+        const filas = [1, 3, 6, 12, 24].map(h => { const a = acum(h); return `${String(h).padStart(2)} h: ${fmtMm(a.mm)} mm${a.faltan ? ` <span class="r-info">(faltan ${a.faltan} h)</span>` : ""}`; });
+        const cob = ult.media == null ? null : ult.cobertura;
+        let h = `\n<span class="r-label">Lluvia estimada por radar</span> <span class="r-info">(media sobre la cuenca, hasta las ${finTxt})</span>
+<span class="r-name">${fmtMm(ult.media)} mm</span> <span class="r-info">en la ultima hora${ult.media != null ? ` · maximo en una celda: ${fmtMm(ult.max)} mm` : ""}</span>
+<span class="r-info">Acumulado:</span>
+  ${filas.join("\n  ")}`;
+        h += graficoLluvia(serie);
+        const avisos = [];
+        if (celdas.centroide) avisos.push("La cuenca es menor que una celda del radar (2 km): se da el valor de la celda que la contiene.");
+        else avisos.push(`${celdas.dentro.length.toLocaleString("es-ES")} celdas de 2 km.`);
+        if (cob != null && cob < 0.98) avisos.push(`Solo el ${(cob * 100).toFixed(0)} % de la cuenca tiene cobertura de radar en OPERA; el resto queda fuera de la media.`);
+        if (ult.media == null) avisos.push("La ultima hora no tiene cobertura de radar en esta cuenca.");
+        avisos.push("Estimacion de radar sin ajustar con pluviometros: puede infra o sobrestimar, sobre todo con lluvia intensa o tras montañas.");
+        h += `<span class="r-info" style="font-size:11px;">${avisos.join(" ")}\nFuente: compuesto OPERA de EUMETNET (radares de AEMET y vecinos), CC BY 4.0.</span>`;
+        escribir(h);
+        if (boton) boton.style.display = "none";
+        salida.scrollIntoView({ behavior: "smooth", block: "end" });
+    } catch (e) {
+        escribir(`\n<span style="color:#ff6b6b;">No se pudo leer el radar: ${escapeHtml(e.message)}</span>`);
+        if (boton) boton.disabled = false;
+    }
+}
+const BOTON_LLUVIA = `\n<button class="action" onclick="lluviaRadarCuenca(this)" style="background:linear-gradient(135deg,#01579B,#29B6F6);">🌧️ Lluvia de radar en la cuenca (24 h)</button>`;
 
 // --- Download ---
 function downloadResult() {
