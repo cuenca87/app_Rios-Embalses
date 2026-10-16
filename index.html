@@ -100,6 +100,10 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
 .ll-lab i { flex:1; font-style:normal; }
 .ll-est { margin-top:4px; }
 .ll-fuente { margin-top:3px; font-size:9px; color:#8892b0; }
+.ae-et span { display:inline-block; transform:translate(-50%,-50%); padding:0 4px; border-radius:3px; font-size:11px; font-weight:700;
+    line-height:16px; white-space:nowrap; border:1px solid rgba(26,26,46,.6); box-shadow:0 1px 2px rgba(0,0,0,.35); cursor:pointer; }
+.ae-et { background:none; border:none; }
+.ll-bts button[data-v] { font-size:10px; }
 .ll-sin { display:inline-block; width:9px; height:9px; background:rgba(90,90,90,.6); vertical-align:middle; }
 #map.picking, #map.picking .leaflet-interactive { cursor:crosshair; }
 /* Ventana de la cuenca en 3D */
@@ -119,6 +123,9 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
 .fc-stats b { display:block; font-size:26px; line-height:1.15; color:#e0e0e0; font-weight:700; }
 .fc-gtit { color:#64B5F6; font-weight:600; margin:8px 0 2px; }
 #fc-graf { margin-top:8px; }
+.fc-ae { display:flex; align-items:center; gap:3px; cursor:default; }
+.fc-ae i { width:9px; height:9px; border-radius:50%; background:#fff; border:2px solid #1565C0; box-sizing:border-box; flex:none; }
+.fc-ae span { background:rgba(21,101,192,.9); color:#fff; font-size:10px; font-weight:700; padding:0 4px; border-radius:3px; white-space:nowrap; }
 .fc-marca { pointer-events:none; display:flex; align-items:center; gap:4px; }
 .fc-marca i { width:12px; height:12px; border-radius:50%; background:#E53935; border:2px solid #fff; box-sizing:border-box; flex:none; }
 .fc-marca span { background:rgba(255,255,255,.92); color:#1a1a2e; font-size:11px; font-weight:700; padding:1px 6px; border-radius:4px; white-space:nowrap; box-shadow:0 1px 3px rgba(0,0,0,.4); }
@@ -2062,6 +2069,7 @@ async function abrirFichaCuenca() {
 <div class="v3d-bts" id="fc-graf"><button data-g="max" class="on">Punto mas lluvioso</button><button data-g="media">Media de la cuenca</button></div>
 <div id="fc-grafico"></div>
 <div id="fc-notas" class="r-info" style="font-size:11px;"></div>
+<label>Pluviometros de AEMET en la cuenca</label><div id="fc-aemet" class="r-info" style="white-space:pre-wrap;">Leyendo AEMET...</div>
 <label>Vista</label><div class="v3d-bts"><button id="v3d-2d" class="on">Planta</button><button id="v3d-3d">🏔️ 3D</button><button id="v3d-reset">Encuadrar</button><button id="v3d-giro" style="display:none">⟳ Girar</button></div>
 <div id="v3d-exbox" style="display:none;"><label>Exageracion del relieve: <span id="v3d-exv"></span></label><input type="range" id="v3d-ex" min="1" max="5" step="0.5"></div>
 <label>Fondo</label><div class="v3d-bts" id="v3d-fondo"><button data-f="orto" class="on">Ortofoto</button><button data-f="mapa">Mapa IGN</button><button id="v3d-rios" class="on">Red fluvial</button></div>
@@ -2218,6 +2226,7 @@ async function abrirFichaCuenca() {
         const faltan = d.horas.slice(-h).filter(x => !x.v).length;
         if (faltan) notas.push(`Faltan ${faltan} h de datos del radar.`);
         set("fc-notas", notas.join(" "));
+        pintarAemetFicha();
         // Marca del punto mas lluvioso
         marcaMax?.remove(); marcaMax = null;
         if (mx && mx.mm >= 0.1) {
@@ -2239,6 +2248,35 @@ async function abrirFichaCuenca() {
         };
         if (m.isStyleLoaded()) pon(); else m.once("load", pon);
     };
+    // Pluviometros de AEMET dentro de la cuenca, para comparar con el radar
+    let aemetD = null, aemetDentro = null, marcasAemet = [];
+    function pintarAemetFicha() {
+        marcasAemet.forEach(x => x.remove()); marcasAemet = [];
+        if (!aemetD || mapa3d !== m) return;
+        const h = horas, disp = aemetHorasDisp(aemetD), hh = Math.min(h, disp);
+        if (!aemetDentro.length) { set("fc-aemet", "No hay estaciones de AEMET dentro de la cuenca."); return; }
+        const vals = aemetDentro.map(e => ({ e, mm: aemetPrec(aemetD, e, hh) })).filter(x => x.mm != null).sort((a, b) => b.mm - a.mm);
+        for (const { e, mm } of vals) {
+            const el = document.createElement("div");
+            el.className = "fc-ae";
+            el.innerHTML = `<i></i><span>${numES(mm, 1)}</span>`;
+            el.title = `${nombreEst(e.nombre)}: ${numES(mm, 1)} mm en ${hh} h (AEMET)`;
+            marcasAemet.push(new maplibregl.Marker({ element: el, anchor: "left", offset: [-5, 0] }).setLngLat([e.lon, e.lat]).addTo(m));
+        }
+        if (!vals.length) { set("fc-aemet", `${aemetDentro.length} estaciones en la cuenca, sin datos de lluvia de las ultimas ${hh} h.`); return; }
+        const media = vals.reduce((a, x) => a + x.mm, 0) / vals.length;
+        set("fc-aemet", `${h > disp ? `<span style="color:#FFB74D">AEMET solo publica las ultimas ${disp} h: se dan esas.</span>\n` : ""}`
+            + `${vals.length} estacion${vals.length > 1 ? "es" : ""} · media ${fmtMm(media)} mm · max ${fmtMm(vals[0].mm)} mm en ${hh} h\n`
+            + vals.slice(0, 8).map(x => `  ${escapeHtml(nombreEst(x.e.nombre))}: <b style="color:#e0e0e0">${numES(x.mm, 1)} mm</b>`).join("\n")
+            + (vals.length > 8 ? `\n  y ${vals.length - 8} mas` : "")
+            + `\n<span style="font-size:10px">Medidas de pluviometro (AEMET OpenData), en el mapa como etiquetas azules. La media de las estaciones no es la de la cuenca: sirve para contrastar el radar.</span>`);
+    }
+    cargarAemet().then(D => {
+        if (mapa3d !== m) return;
+        aemetD = D;
+        aemetDentro = D.est.filter(e => c.geom.features.some(f => { try { return turf.booleanPointInPolygon([e.lon, e.lat], f); } catch { return false; } }));
+        if (m.isStyleLoaded()) pintarAemetFicha(); else m.once("load", pintarAemetFicha);
+    }).catch(err => set("fc-aemet", `<span style="color:#ff6b6b;">No se pudo leer AEMET: ${escapeHtml(err.message)}</span>`));
     document.querySelectorAll("#fc-per button").forEach(b => b.onclick = () => {
         document.querySelectorAll("#fc-per button").forEach(x => x.classList.toggle("on", x === b));
         horas = +b.dataset.h; pintarLluvia();
@@ -2382,6 +2420,194 @@ map.on("click", async e => {
     const fila = h => { const v = k < 0 ? null : acumCelda(d, k, h); return `${h} h: <b>${v == null ? "sin cobertura" : fmtMm(v) + " mm"}</b>`; };
     L.popup().setLatLng(e.latlng).setContent(`<div style="font-size:12px">Lluvia por radar (celda de 2 km)<br>${[1, 3, 6, 12, 24].map(fila).join("<br>")}<br><span style="color:#777">hasta las ${horaLocal(d.fin)}</span></div>`).openOn(map);
 });
+
+// --- Estaciones de AEMET (observacion convencional, ultimas ~12 h, cada hora) ---
+// AEMET OpenData: primero se pide la URL de los datos y luego los datos (ISO-8859-15).
+// Clave de cuenca87@gmail.com (la misma de la app del tiempo): caduca el 10-nov-2026,
+// se renueva en https://opendata.aemet.es/centrodedescargas/altaUsuario
+const AEMET_KEY = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjdWVuY2E4N0BnbWFpbC5jb20iLCJqdGkiOiJiMDhmNTQ1ZS0zMDU5LTRkNjctYTcxMS0zYTc4NzI1ODg1MjgiLCJleHAiOjE3OTQzMjAxMzEsImlzcyI6IkFFTUVUIiwiaWF0IjoxNzg1NjgwMTMxLCJ1c2VySWQiOiJiMDhmNTQ1ZS0zMDU5LTRkNjctYTcxMS0zYTc4NzI1ODg1MjgiLCJyb2xlIjoiIn0.y6cR46MlBZ2SVG_v3gPqCk84Vkn0HMx_E9ojRSwSLRw";
+const AEMET_OBS = "https://opendata.aemet.es/opendata/api/observacion/convencional/todas";
+let aemetCarga = null;   // { p: Promise, t }
+async function aemetJson(url) {
+    for (let i = 0; i < 3; i++) {
+        try {
+            const r = await fetchConHost(url);
+            if (r.status === 429) throw new Error("AEMET limita las peticiones (429)");
+            if (!r.ok) throw new Error(`AEMET respondio ${r.status}`);
+            return JSON.parse(new TextDecoder("iso-8859-15").decode(await r.arrayBuffer()));
+        } catch (e) {
+            if (i === 2) throw e;
+            await new Promise(ok => setTimeout(ok, 1500 * (i + 1)));
+        }
+    }
+}
+// { T: Date del ultimo dato, est: [{ id, nombre, lat, lon, alt, obs: [...] }] }
+function cargarAemet() {
+    if (aemetCarga && Date.now() - aemetCarga.t < 10 * 60000) return aemetCarga.p;
+    const p = (async () => {
+        const meta = await aemetJson(`${AEMET_OBS}?api_key=${AEMET_KEY}`);
+        if (!meta?.datos) throw new Error(meta?.descripcion || "AEMET no devolvio datos");
+        const filas = await aemetJson(meta.datos);
+        const porId = new Map();
+        let T = 0;
+        for (const o of filas) {
+            if (o.lat == null || o.lon == null || !o.fint) continue;
+            o.t = Date.parse(o.fint.replace(/\+0000$/, "Z"));
+            if (o.t > T) T = o.t;
+            let e = porId.get(o.idema);
+            if (!e) porId.set(o.idema, e = { id: o.idema, nombre: o.ubi, lat: o.lat, lon: o.lon, alt: o.alt, obs: [] });
+            e.obs.push(o);
+        }
+        const est = [...porId.values()];
+        est.forEach(e => e.obs.sort((a, b) => a.t - b.t));
+        return { T: new Date(T), est };
+    })();
+    aemetCarga = { p, t: Date.now() };
+    p.catch(() => { aemetCarga = null; });
+    return p;
+}
+const nombreEst = s => (s || "").trim().toLowerCase().replace(/(^|[\s(/-])(\p{L})/gu, (a, b, c) => b + c.toUpperCase())
+    .replace(/ (De|Del|La|Las|Los|El|Y|En)(?= )/g, x => x.toLowerCase());
+// Ultimo dato de la estacion si es reciente (<= 2 h antes del ultimo de AEMET)
+const aemetActual = (D, e) => { const o = e.obs[e.obs.length - 1]; return o && D.T - o.t <= 2 * 3600000 ? o : null; };
+// Lluvia de las ultimas h horas (mm; null si faltan demasiadas horas)
+function aemetPrec(D, e, h) {
+    // Desde el ultimo dato de la propia estacion (algunas van una hora por detras)
+    const ult = aemetActual(D, e);
+    if (!ult) return null;
+    const desde = ult.t - h * 3600000;
+    const v = e.obs.filter(o => o.t > desde && o.prec != null);
+    return v.length >= Math.ceil(h * 0.75) ? v.reduce((a, o) => a + o.prec, 0) : null;
+}
+// Horas que cubre AEMET (normalmente 12-13)
+const aemetHorasDisp = D => Math.round((D.T - Math.min(...D.est.map(e => e.obs[0].t))) / 3600000) + 1;
+
+const AEMET_VARS = {
+    ta: { nom: "Temperatura", ud: "°C", dec: 1, esc: [[-10, "#4a148c"], [-5, "#3949ab"], [0, "#1e88e5"], [5, "#29b6f6"], [10, "#4db6ac"], [15, "#9ccc65"], [20, "#fdd835"], [25, "#fb8c00"], [30, "#e53935"], [35, "#b71c1c"], [40, "#6a1b9a"]] },
+    prec: { nom: "Lluvia", ud: "mm", dec: 1, esc: [[0, "#cfd8dc"], [0.1, "#b3e5fc"], [1, "#4fc3f7"], [2, "#29b6f6"], [5, "#1e88e5"], [10, "#43a047"], [20, "#fdd835"], [30, "#fb8c00"], [50, "#e53935"], [75, "#c2185b"], [100, "#8e24aa"]] },
+    vv: { nom: "Viento", ud: "km/h", dec: 0, esc: [[0, "#b3e5fc"], [10, "#4fc3f7"], [20, "#43a047"], [30, "#fdd835"], [40, "#fb8c00"], [60, "#e53935"], [80, "#8e24aa"]] },
+    hr: { nom: "Humedad", ud: "%", dec: 0, esc: [[0, "#fb8c00"], [30, "#fdd835"], [50, "#9ccc65"], [70, "#4fc3f7"], [90, "#1e88e5"]] }
+};
+let aemetCapa = null, aemetLeyenda = null, aemetVar = "ta", aemetHoras = 1;
+function aemetValor(D, e) {
+    if (aemetVar === "prec") return aemetPrec(D, e, aemetHoras);
+    const o = aemetActual(D, e);
+    if (!o || o[aemetVar] == null) return null;
+    return aemetVar === "vv" ? o.vv * 3.6 : o[aemetVar];
+}
+function colorEsc(esc, v) { let c = esc[0][1]; for (const [x, col] of esc) if (v >= x) c = col; return c; }
+const textoSobre = hex => { const n = parseInt(hex.slice(1), 16); return ((n >> 16) * 299 + ((n >> 8 & 255) * 587) + (n & 255) * 114) / 1000 > 150 ? "#1a1a2e" : "#fff"; };
+function fmtVar(v, dec) { return v == null ? "-" : numES(v, dec).replace(/^-0$/, "0"); }
+
+// Mini grafico de las ultimas horas: barras de lluvia y linea de temperatura
+function graficoEstacion(e) {
+    const obs = e.obs, W = 260, H = 110, m = { l: 26, r: 26, t: 12, b: 16 }, n = obs.length;
+    if (!n) return "";
+    const bw = (W - m.l - m.r) / n, ts = obs.map(o => o.ta).filter(v => v != null);
+    const pmax = Math.max(1, ...obs.map(o => o.prec || 0));
+    const tmin = ts.length ? Math.floor(Math.min(...ts)) - 1 : 0, tmax = ts.length ? Math.ceil(Math.max(...ts)) + 1 : 1;
+    const yp = v => m.t + (H - m.t - m.b) * (1 - v / pmax), yt = v => m.t + (H - m.t - m.b) * (1 - (v - tmin) / (tmax - tmin));
+    let g = `<svg viewBox="0 0 ${W} ${H}" width="${W}" style="display:block;margin-top:4px;" font-size="8" fill="#666">`;
+    g += `<text x="2" y="8" fill="#1e88e5">mm</text><text x="${W - 2}" y="8" text-anchor="end" fill="#e53935">°C</text>`;
+    g += `<text x="${m.l - 2}" y="${m.t + 3}" text-anchor="end" fill="#1e88e5">${numES(pmax, 1)}</text><text x="${m.l - 2}" y="${H - m.b}" text-anchor="end" fill="#1e88e5">0</text>`;
+    g += `<text x="${W - m.r + 2}" y="${m.t + 3}" fill="#e53935">${tmax}</text><text x="${W - m.r + 2}" y="${H - m.b}" fill="#e53935">${tmin}</text>`;
+    g += `<line x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}" stroke="#ccc"/>`;
+    obs.forEach((o, i) => {
+        const x = m.l + i * bw;
+        if (o.prec > 0) g += `<rect x="${x + 1}" y="${yp(o.prec)}" width="${Math.max(bw - 2, 1)}" height="${H - m.b - yp(o.prec)}" fill="#29b6f6"><title>${horaLocal(new Date(o.t))}: ${numES(o.prec, 1)} mm</title></rect>`;
+        if (i % 3 === (n - 1) % 3) g += `<text x="${x + bw / 2}" y="${H - 4}" text-anchor="middle">${horaLocal(new Date(o.t)).slice(0, 2)}h</text>`;
+    });
+    const pts = obs.map((o, i) => o.ta == null ? null : `${m.l + (i + 0.5) * bw},${yt(o.ta)}`).filter(Boolean);
+    if (pts.length > 1) g += `<polyline points="${pts.join(" ")}" fill="none" stroke="#e53935" stroke-width="1.8"/>`;
+    return g + "</svg>";
+}
+function popupEstacion(D, e) {
+    const o = aemetActual(D, e) || e.obs[e.obs.length - 1];
+    const v = (x, ud, dec = 1) => x == null ? null : `${numES(x, dec)} ${ud}`;
+    const tmax = Math.max(...e.obs.map(x => x.tamax ?? -99)), tmin = Math.min(...e.obs.map(x => x.tamin ?? 99));
+    const filas = [
+        ["Temperatura", v(o.ta, "°C")],
+        ["Max / min (ultimas horas)", tmax > -99 && tmin < 99 ? `${numES(tmax, 1)} / ${numES(tmin, 1)} °C` : null],
+        ["Humedad", v(o.hr, "%", 0)],
+        ["Viento", o.vv != null ? `${numES(o.vv * 3.6, 0)} km/h${o.dv != null ? ` del ${["N", "NE", "E", "SE", "S", "SO", "O", "NO"][Math.round(o.dv / 45) % 8]}` : ""}${o.vmax != null ? ` · racha ${numES(o.vmax * 3.6, 0)} km/h` : ""}` : null],
+        ["Presion (nivel del mar)", v(o.pres_nmar, "hPa", 1)],
+        ["Lluvia", [1, 3, 6, 12].map(h => { const p = aemetPrec(D, e, h); return p == null ? null : `${h} h: <b>${numES(p, 1)}</b>`; }).filter(Boolean).join(" · ") + " mm"]
+    ].filter(f => f[1] != null);
+    return `<div style="font-size:12px;min-width:240px"><b>${escapeHtml(nombreEst(e.nombre))}</b> <span style="color:#777">(${e.id} · ${numES(e.alt || 0)} m)</span><br>
+<span style="color:#777">Ultimo dato: ${new Date(o.t).toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+<table style="margin-top:4px;border-collapse:collapse">${filas.map(([a, b]) => `<tr><td style="color:#555;padding-right:8px">${a}</td><td>${b}</td></tr>`).join("")}</table>
+${graficoEstacion(e)}<span style="color:#999;font-size:10px">Fuente: AEMET OpenData</span></div>`;
+}
+function htmlLeyendaAemet(estado) {
+    const vs = Object.entries(AEMET_VARS).map(([k, x]) => `<button data-v="${k}" class="${k === aemetVar ? "on" : ""}">${x.nom}</button>`).join("");
+    const hs = aemetVar === "prec" ? `<div class="ll-bts">${[1, 3, 6, 12].map(h => `<button data-h="${h}" class="${h === aemetHoras ? "on" : ""}">${h} h</button>`).join("")}</div>` : "";
+    const esc = AEMET_VARS[aemetVar].esc;
+    return `<b>🌡️ Estaciones de AEMET</b><div class="ll-bts">${vs}</div>${hs}
+<div class="ll-esc">${esc.map(([, c]) => `<span style="background:${c}"></span>`).join("")}</div><div class="ll-lab">${esc.map(([v]) => `<i>${v}</i>`).join("")}</div>
+<div class="ll-est">${estado}</div><div class="ll-fuente">AEMET OpenData · ${AEMET_VARS[aemetVar].ud}</div>`;
+}
+async function pintarAemet(soloMarcas) {
+    const caja = aemetLeyenda.getContainer(), est = t => { const e = caja.querySelector(".ll-est"); if (e) e.innerHTML = t; };
+    if (!soloMarcas) caja.innerHTML = htmlLeyendaAemet("Cargando las estaciones...");
+    try {
+        const D = await cargarAemet();
+        if (!aemetCapa) return;
+        aemetCapa.clearLayers();
+        const x = AEMET_VARS[aemetVar], etiquetas = map.getZoom() >= 8, vista = map.getBounds().pad(0.2);
+        let n = 0;
+        for (const e of D.est) {
+            const v = aemetValor(D, e);
+            if (v == null) continue;
+            n++;
+            const col = colorEsc(x.esc, v);
+            const capa = etiquetas && vista.contains([e.lat, e.lon])
+                ? L.marker([e.lat, e.lon], { icon: L.divIcon({ className: "ae-et", html: `<span style="background:${col};color:${textoSobre(col)}">${fmtVar(v, x.dec)}</span>`, iconSize: null }) })
+                : L.circleMarker([e.lat, e.lon], { radius: 5, color: "#1a1a2e", weight: 1, fillColor: col, fillOpacity: 0.95 });
+            capa.on("click", ev => { L.DomEvent.stop(ev); L.popup({ maxWidth: 300 }).setLatLng([e.lat, e.lon]).setContent(popupEstacion(D, e)).openOn(map); });
+            capa.addTo(aemetCapa);
+        }
+        const disp = aemetHorasDisp(D);
+        est(`${n} estaciones · datos hasta las ${horaLocal(D.T)}${aemetVar === "prec" && aemetHoras > disp ? ` · <span style="color:#FFB74D">AEMET solo da ${disp} h</span>` : ""}<span class="ll-ayuda"><br>${etiquetas ? "" : "Acerque el mapa para ver los valores · "}pulse una estacion para ver sus datos</span>`);
+    } catch (err) { est(`<span style="color:#ff6b6b">No se pudo leer AEMET: ${escapeHtml(err.message)}</span>`); }
+}
+function alternarAemet() {
+    const bt = document.querySelector(".ae-toggle");
+    if (aemetCapa) {
+        map.removeLayer(aemetCapa); map.removeControl(aemetLeyenda);
+        aemetCapa = aemetLeyenda = null; bt?.classList.remove("on");
+        return;
+    }
+    bt?.classList.add("on");
+    aemetCapa = L.layerGroup().addTo(map);
+    aemetLeyenda = L.control({ position: "bottomright" });
+    aemetLeyenda.onAdd = () => {
+        const div = L.DomUtil.create("div", "ll-leyenda");
+        L.DomEvent.disableClickPropagation(div);
+        div.addEventListener("click", ev => {
+            ev.stopPropagation();   // la leyenda se redibuja (ver la de lluvia)
+            const t = ev.target;
+            if (t.dataset?.v) { aemetVar = t.dataset.v; pintarAemet(); }
+            else if (t.dataset?.h) { aemetHoras = +t.dataset.h; pintarAemet(); }
+        });
+        return div;
+    };
+    aemetLeyenda.addTo(map);
+    pintarAemet();
+}
+// Con zoom >= 8 se ponen etiquetas con el valor solo en las estaciones a la vista
+let aemetZoomPrev = map.getZoom();
+map.on("moveend", () => { const z = map.getZoom(); if (aemetCapa && (z >= 8 || aemetZoomPrev >= 8)) pintarAemet(true); aemetZoomPrev = z; });
+const BotonAemet = L.Control.extend({
+    options: { position: "topleft" },
+    onAdd() {
+        const a = L.DomUtil.create("a", "ll-toggle ae-toggle leaflet-bar");
+        a.href = "#"; a.title = "Estaciones de AEMET (temperatura, lluvia, viento, humedad)"; a.textContent = "🌡️";
+        L.DomEvent.disableClickPropagation(a);
+        L.DomEvent.on(a, "click", ev => { L.DomEvent.preventDefault(ev); alternarAemet(); });
+        return a;
+    }
+});
+new BotonAemet().addTo(map);
 
 // --- Download ---
 function downloadResult() {
