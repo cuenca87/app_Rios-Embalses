@@ -461,7 +461,7 @@ async function getElevation(lon, lat) {
 }
 
 // --- State ---
-let resultLayer = null;
+let resultLayer = null, embalseLayer = null;
 let arpsiLayer = null;
 let extraLayer = null;
 let traceLayer = null;
@@ -880,8 +880,9 @@ async function searchEmbalse(name, nearPt) {
         lastEmbalseFeats = feats;
         resultLayer = L.geoJSON(lastGeoJSON, {
             style: () => ({ color:"#0D47A1", weight:2, fillColor:"#2196F3", fillOpacity:0.4 }),
-            onEachFeature: (f,ly) => { const p=f.properties||{}; ly.bindPopup(`<b>${p.nombre||"-"}</b><br>Demarcacion: ${p.id_demarcd||"-"}<br>Superficie: ${p.area?(p.area/10000).toFixed(1)+" ha":"-"}`); }
+            onEachFeature: (f,ly) => { const p=f.properties||{}; ly.bindPopup(`<b>${p.nombre||"-"}</b><br>Demarcacion: ${p.id_demarcd||"-"}<br>Superficie: ${p.area?(p.area/10000).toFixed(1)+" ha":"-"}<br><button class="action" style="margin-top:6px;padding:6px 10px;font-size:12px;background:linear-gradient(135deg,#006064,#00ACC1);" onclick="map.closePopup();cuencaEmbalse()">💧 Cuenca vertiente del embalse</button>`); }
         }).addTo(map);
+        embalseLayer = resultLayer;
         map.fitBounds(resultLayer.getBounds().pad(0.3));
         document.getElementById("dl-btn").disabled = false;
         document.getElementById("btn-embalse-analisis").disabled = false;
@@ -1544,12 +1545,21 @@ function activarPuntoCuenca() {
     ib.textContent = "Pulse sobre un cauce para calcular su cuenca vertiente";
     ib.style.display = "block";
 }
+// Embalse buscado que sigue en el mapa (o null)
+const embalseEnMapa = () => embalseLayer && resultLayer === embalseLayer && map.hasLayer(embalseLayer) && lastEmbalseFeats ? lastEmbalseFeats : null;
 map.on("click", e => {
     if (!cuencaPicking) return;
     e.usadoCuenca = true;   // para que la capa de lluvia no abra tambien su popup
     cuencaPicking = false;
     document.getElementById("map").classList.remove("picking");
     document.getElementById("info-banner").style.display = "none";
+    // Pulsando dentro del embalse buscado: su cuenca, cerrada en la presa
+    const emb = embalseEnMapa(), pt = turf.point([e.latlng.lng, e.latlng.lat]);
+    if (emb && emb.some(f => { try { return turf.booleanPointInPolygon(pt, f); } catch { return false; } })) {
+        map.closePopup();
+        cuencaEmbalse();
+        return;
+    }
     calcularCuencaPunto(e.latlng.lng, e.latlng.lat);
 });
 
