@@ -325,11 +325,40 @@ function fetchConHost(input, init) {
         throw new TypeError(`${e.message} (sin respuesta de ${host})${/workers\.dev$/.test(host) ? ". " + AVISO_BLOQUEO : ""}`);
     });
 }
+// Proxy de reserva fuera de Cloudflare (Vercel, proxy/vercel/middleware.js): si un Worker
+// no responde en 12 s se repite alli, y durante 10 min se va directamente a la reserva.
+const PROXY_RESERVA = "https://rios-proxy.vercel.app/";
+const RESERVAS = [["https://miteco-ogc-proxy.riosyembalses.workers.dev/", "miteco/"], ["https://argos-hydro-proxy.riosyembalses.workers.dev/", "argos/"]];
+let workersCaidosT = 0;
+function rutaReserva(url) {
+    for (const [cf, p] of RESERVAS) if (url.startsWith(cf)) return PROXY_RESERVA + p + url.slice(cf.length);
+    return null;
+}
+async function fetchWorker(input, init) {
+    const url = typeof input === "string" ? input : input?.url;
+    const reserva = url ? rutaReserva(url) : null;
+    if (!reserva) return fetchConHost(input, init);
+    const aReserva = () => fetchConHost(typeof input === "string" ? reserva : new Request(reserva, input), init);
+    if (Date.now() - workersCaidosT < 10 * 60000) return aReserva();
+    const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), 12000);
+    init?.signal?.addEventListener("abort", () => ctl.abort());
+    try {
+        const r = await _fetchOriginal(input, { ...init, signal: ctl.signal });
+        clearTimeout(tm);
+        return r;
+    } catch (e) {
+        clearTimeout(tm);
+        if (init?.signal?.aborted) throw e;
+        workersCaidosT = Date.now();
+        console.warn("Cloudflare no responde: se usa el proxy de reserva", PROXY_RESERVA);
+        return aReserva();
+    }
+}
 window.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input?.url;
     const proxyUrl = MITECO_PROXY && url ? mitecoRutaProxy(url) : null;
-    if (!proxyUrl) return fetchConHost(input, init);
-    const viaProxy = () => fetchConHost(proxyUrl, init);
+    if (!proxyUrl) return fetchWorker(input, init);
+    const viaProxy = () => fetchWorker(proxyUrl, init);
     if (mitecoViaProxy) return viaProxy();
     try {
         return await _fetchOriginal(input, init);

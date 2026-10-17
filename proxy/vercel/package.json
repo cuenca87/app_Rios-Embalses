@@ -1,0 +1,5 @@
+{
+  "name": "rios-proxy",
+  "private": true,
+  "description": "Proxy de reserva (fuera de Cloudflare) para app_Rios-Embalses"
+}

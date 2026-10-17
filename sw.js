@@ -1,4 +1,4 @@
-﻿const CACHE_NAME = "rios-visor-v24";
+﻿const CACHE_NAME = "rios-visor-v25";
 const ASSETS = [
   "./index.html",
   "./icon.svg",
@@ -16,7 +16,9 @@ const LIVE_HOSTS = [
   "workers.dev",
   "tile.openstreetmap.org",
   "amazonaws.com",
-  "aemet.es"
+  "aemet.es",
+  "argos-hydro.com",
+  "vercel.app"
 ];
 
 self.addEventListener("install", (e) => {
