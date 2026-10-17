@@ -130,6 +130,8 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
 .fc-sub { color:#8892b0; font-size:12px; margin-bottom:8px; }
 .fc-sub b { color:#e0e0e0; }
 .v3d-bts.fc-per button { flex:1 1 0; }
+.v3d-bts.fc-fu button { font-size:13px; font-weight:600; padding:6px 4px; }
+.v3d-bts.fc-fu small { display:block; font-size:10px; font-weight:400; opacity:.85; }
 #v3d-cab b { font-size:18px; }
 .fc-stats { display:flex; gap:10px; margin:10px 0 2px; }
 .fc-stats > div { flex:1; }
@@ -1946,22 +1948,83 @@ function cargarLluvia(progreso) {
         };
         await Promise.all(Array.from({ length: 6 }, trabajador));
         const [ox, oy] = img.getOrigin(), [rx, ry] = img.getResolution();
-        return { fin, horas, W, H, ox: ox + c0 * rx, oy: oy + f0 * ry, rx, ry };
+        return { fin, horas, W, H, ox: ox + c0 * rx, oy: oy + f0 * ry, rx, ry, proj: "OPERA" };
     })();
     lluviaCarga = { p, t: Date.now() };
     p.catch(() => { lluviaCarga = null; });
     return p;
 }
+
+// Prevision de lluvia del modelo AROME de Meteo-France (~1,3 km, hasta 51 h, ejecucion
+// nueva cada 3 h). La descarga y prepara la app del tiempo (repo cuenca87/meteo, GitHub
+// Actions): por cada hora, un PNG con la lluvia de esa hora en centesimas de mm
+// (R = byte alto, G = byte bajo) en celdas de 0,02° (~2 km). El dominio de AROME
+// no llega al sur (por debajo de ~38° N: Guadalquivir, Andalucia oriental, sur de Murcia),
+// a la punta oeste de Galicia ni a Canarias (alli las celdas vienen sin dato).
+// Mismo formato que el radar (horas[].v en Uint16, LLUVIA_SIN = sin dato), pero las
+// horas van hacia delante (prevision: true) y la rejilla es en grados.
+const AROME_URL = "https://cuenca87.github.io/meteo/arome/data/png_precipitacion/";
+let aromeCarga = null;
+async function leerPngValores(url, W, H) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(r.status);
+    const bm = await createImageBitmap(await r.blob(), { colorSpaceConversion: "none", premultiplyAlpha: "none" });
+    const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+    const cx = cv.getContext("2d", { willReadFrequently: true });
+    cx.drawImage(bm, 0, 0);
+    const px = cx.getImageData(0, 0, W, H).data, v = new Uint16Array(W * H);
+    for (let k = 0; k < v.length; k++) v[k] = px[4 * k] << 8 | px[4 * k + 1];
+    return v;
+}
+function cargarArome(progreso) {
+    if (aromeCarga && Date.now() - aromeCarga.t < 10 * 60000) return aromeCarga.p;
+    const p = (async () => {
+        await cargarLibsMdt();   // proj4
+        const r = await fetch(AROME_URL + "manifiesto.json", { cache: "no-cache" });
+        if (!r.ok) throw new Error(`la prevision AROME no esta disponible (${r.status})`);
+        const man = await r.json(), g = man.rejillaValores;
+        if (!g) throw new Error("la prevision AROME aun no trae los valores");
+        // Horas que terminan despues de ahora, seguidas (un hueco queda como hora sin datos)
+        const ahora = Date.now(), porHora = new Map();
+        for (const f of man.frames) if (f.valores && Date.parse(f.hora) > ahora) porHora.set(Date.parse(f.hora), f);
+        if (!porHora.size) throw new Error("la prevision AROME esta caducada");
+        const t0 = Math.min(...porHora.keys()), t1 = Math.max(...porHora.keys());
+        const horas = [];
+        for (let t = t0; t <= t1; t += 3600000) horas.push({ fin: new Date(t), f: porHora.get(t), v: null });
+        let hechas = 0, sig = 0;
+        const trabajador = async () => {
+            while (sig < horas.length) {
+                const hh = horas[sig++];
+                if (hh.f) try { hh.v = await leerPngValores(AROME_URL + hh.f.valores, g.W, g.H); } catch { hh.v = null; }
+                progreso?.(++hechas, horas.length);
+            }
+        };
+        await Promise.all(Array.from({ length: 6 }, trabajador));
+        // "2026-10-17T15.00.00Z" -> fecha de la ejecucion (la de la hora mas proxima)
+        const ej = s => s ? new Date(s.replace(/T(\d\d)\.(\d\d)\.(\d\d)Z/, "T$1:$2:$3Z")) : null;
+        return {
+            prevision: true, proj: "EPSG:4326", horas, W: g.W, H: g.H, ox: g.x0, oy: g.y0, rx: g.dx, ry: -g.dy,
+            ini: new Date(t0 - 3600000), fin: new Date(t1), ejecucion: ej(horas[0].f?.ejecucion || man.ejecucion)
+        };
+    })();
+    aromeCarga = { p, t: Date.now() };
+    p.catch(() => { aromeCarga = null; });
+    return p;
+}
+// Horas [i0, i1) del periodo de h horas: las ultimas del radar o las primeras de la prevision
+const tramoH = (d, h) => d.prevision ? [0, Math.min(h, d.horas.length)] : [d.horas.length - h, d.horas.length];
+const fechaHora = d => d.toLocaleString("es-ES", { weekday: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 // Celda de la ventana que contiene un punto (o -1)
 function celdaLluvia(d, lon, lat) {
-    const [x, y] = proj4("EPSG:4326", "OPERA", [lon, lat]);
+    const [x, y] = proj4("EPSG:4326", d.proj, [lon, lat]);
     const c = Math.floor((x - d.ox) / d.rx), f = Math.floor((y - d.oy) / d.ry);
     return c < 0 || f < 0 || c >= d.W || f >= d.H ? -1 : f * d.W + c;
 }
-// Acumulado de las ultimas h horas en una celda (mm; null si ninguna hora tiene cobertura)
+// Acumulado del periodo de h horas en una celda (mm; null si ninguna hora tiene cobertura)
 function acumCelda(d, k, h) {
     let s = 0, ok = false;
-    for (let i = LLUVIA_HORAS - h; i < LLUVIA_HORAS; i++) {
+    const [i0, i1] = tramoH(d, h);
+    for (let i = i0; i < i1; i++) {
         const v = d.horas[i].v;
         if (!v || v[k] === LLUVIA_SIN) continue;
         s += v[k]; ok = true;
@@ -1974,7 +2037,7 @@ function acumCelda(d, k, h) {
 function celdasCuenca(d, geom) {
     const [w, s, e, n] = turf.bbox(geom);
     const esq = [[w, s], [w, n], [e, s], [e, n], [(w + e) / 2, s], [(w + e) / 2, n], [w, (s + n) / 2], [e, (s + n) / 2]]
-        .map(c => proj4("EPSG:4326", "OPERA", c));
+        .map(c => proj4("EPSG:4326", d.proj, c));
     const col = x => Math.floor((x - d.ox) / d.rx), fil = y => Math.floor((y - d.oy) / d.ry);
     const c0 = Math.max(0, Math.min(...esq.map(p => col(p[0]))) - 1), c1 = Math.min(d.W - 1, Math.max(...esq.map(p => col(p[0]))) + 1);
     const f0 = Math.max(0, Math.min(...esq.map(p => fil(p[1]))) - 1), f1 = Math.min(d.H - 1, Math.max(...esq.map(p => fil(p[1]))) + 1);
@@ -1984,7 +2047,7 @@ function celdasCuenca(d, geom) {
         .map(f => turf.simplify(turf.feature(f.geometry || f), { tolerance: 0.002, highQuality: false }));
     const dentro = [];
     for (let f = f0; f <= f1; f++) for (let c = c0; c <= c1; c++) {
-        const pt = turf.point(proj4("OPERA", "EPSG:4326", [d.ox + (c + 0.5) * d.rx, d.oy + (f + 0.5) * d.ry]));
+        const pt = turf.point(proj4(d.proj, "EPSG:4326", [d.ox + (c + 0.5) * d.rx, d.oy + (f + 0.5) * d.ry]));
         if (polis.some(p => turf.booleanPointInPolygon(pt, p))) dentro.push(f * d.W + c);
     }
     if (dentro.length) return { dentro, centroide: false };
@@ -2033,7 +2096,7 @@ function maxCuenca(d, celdas, h) {
     }
     if (!best) return null;
     const c = best.k % d.W, f = Math.floor(best.k / d.W);
-    [best.lon, best.lat] = proj4("OPERA", "EPSG:4326", [d.ox + (c + 0.5) * d.rx, d.oy + (f + 0.5) * d.ry]);
+    [best.lon, best.lat] = proj4(d.proj, "EPSG:4326", [d.ox + (c + 0.5) * d.rx, d.oy + (f + 0.5) * d.ry]);
     return best;
 }
 // Lluvia de cada hora en una celda (mm; null sin cobertura)
@@ -2046,17 +2109,21 @@ function coberturaCuenca(d, celdas, h) {
     for (const k of celdas.dentro) if (acumCelda(d, k, h) != null) n++;
     return n / celdas.dentro.length;
 }
-// Grafico de 24 h: barras de mm/h (eje izq.) y linea de acumulado del periodo elegido (eje der.)
+// Grafico de todas las horas: barras de mm/h (eje izq.) y linea de acumulado del periodo elegido (eje der.)
 function graficoAcumulado(d, vals, h) {
     const W = 340, H = 175, m = { l: 30, r: 30, t: 16, b: 20 }, n = vals.length, bw = (W - m.l - m.r) / n;
-    const ini = n - h;
+    const [ini, finT] = tramoH(d, h), dentro = i => i >= ini && i < finT;
+    // Etiquetas del eje: la hora cada 6 h (radar) o el dia y la hora cada 12 h (prevision, hasta 51 h)
+    const cada = d.prevision ? 12 : 6;
+    const etq = i => d.prevision ? d.horas[i].fin.toLocaleString("es-ES", { weekday: "short", hour: "2-digit" }) + " h" : horaLocal(d.horas[i].fin);
+    const marca = i => d.prevision ? d.horas[i].fin.getHours() % cada === 0 : i % cada === (n - 1) % cada;
     const acum = []; let s = 0;
-    vals.forEach((v, i) => { if (i >= ini) s += v || 0; acum.push(i >= ini ? s : null); });
+    vals.forEach((v, i) => { if (dentro(i)) s += v || 0; acum.push(dentro(i) ? s : null); });
     const tope = v => { const e = [1, 2, 5, 10, 20, 30, 50, 75, 100, 150, 200, 300, 500]; return e.find(x => x >= v) || Math.ceil(v); };
     const vmax = tope(Math.max(0.5, ...vals.map(v => v || 0))), amax = tope(Math.max(0.5, s));
     const yb = v => m.t + (H - m.t - m.b) * (1 - v / vmax), ya = v => m.t + (H - m.t - m.b) * (1 - v / amax);
     let g = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;" font-size="9" fill="#8892b0">`;
-    g += `<rect x="${m.l + ini * bw}" y="${m.t}" width="${h * bw}" height="${H - m.t - m.b}" fill="#29B6F6" opacity="0.07"/>`;
+    g += `<rect x="${m.l + ini * bw}" y="${m.t}" width="${(finT - ini) * bw}" height="${H - m.t - m.b}" fill="#29B6F6" opacity="0.07"/>`;
     [0, 0.5, 1].forEach(f => {
         const y = m.t + (H - m.t - m.b) * (1 - f);
         g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y}" y2="${y}" stroke="#0f3460"/>`
@@ -2067,8 +2134,8 @@ function graficoAcumulado(d, vals, h) {
     vals.forEach((v, i) => {
         const x = m.l + i * bw, hora = horaLocal(d.horas[i].fin);
         if (v == null) g += `<rect x="${x + 0.5}" y="${m.t}" width="${bw - 1}" height="${H - m.t - m.b}" fill="#fff" opacity="0.04"><title>Hasta las ${hora}: sin datos</title></rect>`;
-        else if (v > 0) g += `<rect x="${x + 0.5}" y="${yb(v)}" width="${Math.max(bw - 1, 1)}" height="${H - m.b - yb(v)}" fill="${i >= ini ? "#29B6F6" : "#3d5a80"}"><title>Hasta las ${hora}: ${fmtMm(v)} mm</title></rect>`;
-        if (i % 6 === (n - 1) % 6) g += `<text x="${x + bw / 2}" y="${H - 6}" text-anchor="middle">${hora}</text>`;
+        else if (v > 0) g += `<rect x="${x + 0.5}" y="${yb(v)}" width="${Math.max(bw - 1, 1)}" height="${H - m.b - yb(v)}" fill="${dentro(i) ? "#29B6F6" : "#3d5a80"}"><title>${d.prevision ? `Hasta el ${fechaHora(d.horas[i].fin)}` : `Hasta las ${hora}`}:${fmtMm(v)} mm</title></rect>`;
+        if (marca(i)) g += `<text x="${d.prevision ? x + bw : x + bw / 2}" y="${H - 6}" text-anchor="middle">${etq(i)}</text>`;
     });
     const pts = acum.map((a, i) => a == null ? null : `${m.l + (i + 1) * bw},${ya(a)}`).filter(Boolean);
     if (pts.length) g += `<polyline points="${m.l + ini * bw},${ya(0)} ${pts.join(" ")}" fill="none" stroke="#FFB74D" stroke-width="2"/>`;
@@ -2194,7 +2261,8 @@ async function abrirFichaCuenca() {
     const dato = (et, val) => val == null || val === "" ? "" : `<span class="r-label">${et}:</span> ${val}\n`;
     const cotaPunto = info.cota_punto_m, relieve = info.cota_max_m != null && cotaPunto != null ? info.cota_max_m - cotaPunto : null;
     document.getElementById("v3d-panel").innerHTML = `<div class="fc-sub">drena <b>${fmtKm2(km2)} km²</b> hasta aqui<span id="fc-cob"></span></div>
-<div class="v3d-bts fc-per" id="fc-per">${[1, 3, 6, 12, 24].map(h => `<button data-h="${h}"${h === 24 ? ' class="on"' : ""}>${h} h</button>`).join("")}</div>
+<div class="v3d-bts fc-fu" id="fc-fu"><button data-fu="radar" class="on">Ha llovido<small>radar · ultimas 24 h</small></button><button data-fu="arome">Va a llover<small id="fc-fu-ar">prevision AROME</small></button></div>
+<div class="v3d-bts fc-per" id="fc-per"></div>
 <div class="fc-stats"><div><small>Media sobre la cuenca</small><b id="fc-media">…</b></div><div><small>Punto mas lluvioso</small><b id="fc-max">…</b></div></div>
 <div id="fc-hasta" class="r-info">Leyendo el radar...</div>
 <div class="v3d-bts" id="fc-graf"><button data-g="max" class="on">Punto mas lluvioso</button><button data-g="media">Media de la cuenca</button></div>
@@ -2208,7 +2276,7 @@ async function abrirFichaCuenca() {
 <label>Fondo</label><div class="v3d-bts" id="v3d-fondo"><button data-f="orto" class="on">Ortofoto</button><button data-f="mapa">Mapa IGN</button><button id="v3d-rios" class="on">Red fluvial</button></div>
 <label>Opacidad de la lluvia: <span id="v3d-llopv">60 %</span></label><input type="range" id="v3d-llopr" min="0" max="100" step="5" value="60">
 <label>Datos de la cuenca</label><div style="white-space:pre-wrap;">${dato("Superficie", fmtKm2(km2) + " km²")}${dato("Cota maxima", info.cota_max_m != null ? numES(info.cota_max_m) + " m" : null)}${dato("Cota media", info.cota_med_m != null ? numES(info.cota_med_m) + " m" : null)}${dato("Cota del punto de cierre", cotaPunto != null ? numES(cotaPunto) + " m" : null)}${dato("Desnivel", relieve != null ? numES(relieve) + " m" : null)}${dato("Subcuencas Pfafstetter", info.n_subcuencas != null ? numES(info.n_subcuencas) : null)}</div>
-<p class="r-info" style="font-size:10px;margin-top:8px;">Pulse en el mapa para ver la cota. En 3D: arrastre con dos dedos o con el boton derecho para girar e inclinar.<br>Lluvia: compuesto OPERA de EUMETNET (radares de AEMET y vecinos, celdas de 2 km), CC BY 4.0. Estimacion de radar sin ajustar con pluviometros, con tope de 100 mm por hora y celda (granizo). Cuenca: MITECO. Ortofoto, mapa y red hidrografica © IGN. Relieve 3D: Terrain Tiles de AWS (SRTM / EU-DEM, ~30 m).</p>`;
+<p class="r-info" style="font-size:10px;margin-top:8px;">Pulse en el mapa para ver la cota. En 3D: arrastre con dos dedos o con el boton derecho para girar e inclinar.<br>Lluvia: compuesto OPERA de EUMETNET (radares de AEMET y vecinos, celdas de 2 km), CC BY 4.0. Estimacion de radar sin ajustar con pluviometros, con tope de 100 mm por hora y celda (granizo). Prevision: modelo AROME de Meteo-France (Etalab 2.0), salida directa en celdas de 2 km. Cuenca: MITECO. Ortofoto, mapa y red hidrografica © IGN. Relieve 3D: Terrain Tiles de AWS (SRTM / EU-DEM, ~30 m).</p>`;
     try {
         await cargarMaplibre();
     } catch (e) {
@@ -2319,6 +2387,9 @@ async function abrirFichaCuenca() {
     // se pone en el canal alfa de la propia imagen
     const llOp = document.getElementById("v3d-llopr");
     let llImg = null, llPend = null, d = null, celdas = null, horas = 24, graf = "max", marcaMax = null;
+    // Prevision AROME: mismos calculos sobre sus propias horas; "horas" sigue siendo el periodo
+    // del radar (lo usan tambien los pluviometros)
+    let fu = "radar", dP = null, celdasP = null, errP = null, horasP = 24, errR = null;
     const [[bs, bw], [bn, be]] = LLUVIA_BOUNDS, llCoords = [[bw, bn], [be, bn], [be, bs], [bw, bs]];
     const conAlfa = async (url, f) => {
         const im = new Image(); im.src = url; await im.decode();
@@ -2339,42 +2410,69 @@ async function abrirFichaCuenca() {
         }, 120);
     };
     const set = (id, h) => { const el = document.getElementById(id); if (el) el.innerHTML = h; };
+    // Media de la cuenca en el periodo (suma de las medias horarias)
+    const mediaPeriodo = (D, C, h) => {
+        const [i0, i1] = tramoH(D, h), med = serieMedia(D, C).slice(i0, i1).filter(x => x != null);
+        return med.length ? med.reduce((a, x) => a + x, 0) : null;
+    };
+    const botonesPer = () => {
+        const sel = fu === "arome" ? horasP : horas;
+        set("fc-per", PERIODOS[fu].map(h => `<button data-h="${h}"${h === sel ? ' class="on"' : ""}>${h} h</button>`).join(""));
+        document.querySelectorAll("#fc-per button").forEach(b => b.onclick = () => {
+            if (fu === "arome") horasP = +b.dataset.h; else horas = +b.dataset.h;
+            botonesPer(); pintarLluvia();
+        });
+    };
+    botonesPer();
     const pintarLluvia = async () => {
-        if (!d || mapa3d !== m) return;
-        const h = horas;
+        if (mapa3d !== m) return;
+        const prev = fu === "arome", D = prev ? dP : d, C = prev ? celdasP : celdas, err = prev ? errP : errR;
+        // Las etiquetas de los pluviometros son lluvia ya caida: en la prevision se quitan
+        pintarAemetFicha(); pintarSaihFicha();
+        if (!prev) pintarAforosFicha();
+        if (!D || !C) {
+            set("fc-media", err ? "-" : "…"); set("fc-max", err ? "-" : "…"); set("fc-grafico", ""); set("fc-notas", ""); set("fc-cob", "");
+            set("fc-hasta", err ? `<span style="color:#ff6b6b;">${prev && dP ? "Sin prevision aqui" : `No se pudo leer ${prev ? "la prevision" : "el radar"}`}: ${escapeHtml(err)}</span>` : prev ? "Leyendo la prevision..." : "Leyendo el radar...");
+            marcaMax?.remove(); marcaMax = null;
+            m.getLayer("lluvia") && m.setLayoutProperty("lluvia", "visibility", "none");
+            return;
+        }
+        const hSel = prev ? horasP : horas, [, i1] = tramoH(D, hSel), h = prev ? i1 : hSel;
         // Cifras y grafico
-        const media = serieMedia(d, celdas).slice(-h).filter(x => x != null);
-        const mmMedia = media.length ? media.reduce((a, x) => a + x, 0) : null;
-        const mx = maxCuenca(d, celdas, h);
+        const mmMedia = mediaPeriodo(D, C, h);
+        const mx = maxCuenca(D, C, h);
         set("fc-media", mmMedia == null ? "sin datos" : `${fmtMm(mmMedia)} mm`);
         set("fc-max", mx ? `${fmtMm(mx.mm)} mm` : "-");
-        const cob = coberturaCuenca(d, celdas, h);
-        set("fc-cob", cob >= 0.98 ? " · cobertura completa" : ` · cobertura del ${(cob * 100).toFixed(0)} %`);
-        set("fc-hasta", `Datos hasta las ${d.fin.toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} · ultimas ${h} h`);
-        const vals = graf === "max" && mx ? serieCelda(d, mx.k) : serieMedia(d, celdas);
-        set("fc-grafico", `<div class="fc-gtit">${graf === "max" && mx ? "Punto mas lluvioso (celda de 2 km)" : "Media sobre la cuenca"}</div>` + graficoAcumulado(d, vals, h));
+        const cob = coberturaCuenca(D, C, h);
+        set("fc-cob", cob >= 0.98 ? (prev ? "" : " · cobertura completa") : ` · ${prev ? "dentro de AROME" : "cobertura"} el ${(cob * 100).toFixed(0)} %`);
+        set("fc-hasta", prev
+            ? `Proximas ${h} h, hasta el ${fechaHora(D.horas[i1 - 1].fin)}${h < hSel ? ` <span style="color:#FFB74D">(la prevision no llega a ${hSel} h)</span>` : ""}<br>Ejecucion del modelo: ${fechaHora(D.ejecucion)}`
+            : `Datos hasta las ${D.fin.toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} · ultimas ${h} h`);
+        const vals = graf === "max" && mx ? serieCelda(D, mx.k) : serieMedia(D, C);
+        set("fc-grafico", `<div class="fc-gtit">${graf === "max" && mx ? `Punto mas lluvioso${prev ? " previsto" : ""} (celda de 2 km)` : `Media sobre la cuenca${prev ? " · prevision" : ""}`}</div>` + graficoAcumulado(D, vals, h));
         const notas = [];
-        if (celdas.centroide) notas.push("La cuenca es menor que una celda del radar (2 km): se da el valor de la celda que la contiene.");
-        else notas.push(`${numES(celdas.dentro.length)} celdas de 2 km en la cuenca.`);
-        if (cob < 0.98) notas.push(`Solo el ${(cob * 100).toFixed(0)} % de la cuenca tiene cobertura de radar en OPERA; el resto queda fuera de la media.`);
-        const faltan = d.horas.slice(-h).filter(x => !x.v).length;
-        if (faltan) notas.push(`Faltan ${faltan} h de datos del radar.`);
+        const fuenteTxt = prev ? "de AROME" : "del radar";
+        if (C.centroide) notas.push(`La cuenca es menor que una celda ${fuenteTxt} (2 km): se da el valor de la celda que la contiene.`);
+        else notas.push(`${numES(C.dentro.length)} celdas de 2 km en la cuenca.`);
+        if (cob < 0.98) notas.push(prev ? `Solo el ${(cob * 100).toFixed(0)} % de la cuenca esta dentro del dominio de AROME (no llega al sur de ~38° N ni a la punta oeste de Galicia); el resto queda fuera de la media.`
+            : `Solo el ${(cob * 100).toFixed(0)} % de la cuenca tiene cobertura de radar en OPERA; el resto queda fuera de la media.`);
+        const [j0, j1] = tramoH(D, h), faltan = D.horas.slice(j0, j1).filter(x => !x.v).length;
+        if (faltan) notas.push(`Faltan ${faltan} h de datos ${fuenteTxt}.`);
+        if (prev) notas.push("Es la salida directa del modelo, sin corregir: la cantidad y sobre todo el sitio exacto de los chubascos y tormentas tienen mucha incertidumbre, y mas cuanto mas lejos en el tiempo.");
         set("fc-notas", notas.join(" "));
-        pintarAemetFicha();
-        pintarSaihFicha();
-        pintarAforosFicha();
         // Marca del punto mas lluvioso
         marcaMax?.remove(); marcaMax = null;
         if (mx && mx.mm >= 0.1) {
             const el = document.createElement("div");
             el.className = "fc-marca";
-            el.innerHTML = `<i></i><span>max. ${fmtMm(mx.mm)} mm</span>`;
+            el.innerHTML = `<i></i><span>max.${prev ? " previsto" : ""} ${fmtMm(mx.mm)} mm</span>`;
             marcaMax = new maplibregl.Marker({ element: el, anchor: "top-left", offset: [-6, -6] }).setLngLat([mx.lon, mx.lat]).addTo(m);
         }
         // Capa de lluvia del periodo
-        llImg = imagenLluvia(d, h).url;
+        llImg = imagenLluvia(D, h).url;
         const url = await conAlfa(llImg, llOp.value / 100);
-        if (mapa3d !== m || h !== horas) return;
+        if (mapa3d !== m || fu !== (prev ? "arome" : "radar") || hSel !== (prev ? horasP : horas)) return;
+        m.getLayer("lluvia") && m.setLayoutProperty("lluvia", "visibility", "visible");
         const pon = () => {
             if (m.getSource("lluvia")) m.getSource("lluvia").updateImage({ url, coordinates: llCoords });
             else {
@@ -2392,7 +2490,7 @@ async function abrirFichaCuenca() {
         const h = horas, disp = aemetHorasDisp(aemetD), hh = Math.min(h, disp);
         if (!aemetDentro.length) { set("fc-aemet", "No hay estaciones de AEMET dentro de la cuenca."); return; }
         const vals = aemetDentro.map(e => ({ e, mm: aemetPrec(aemetD, e, hh) })).filter(x => x.mm != null).sort((a, b) => b.mm - a.mm);
-        for (const { e, mm } of vals) {
+        if (fu === "radar") for (const { e, mm } of vals) {
             const el = document.createElement("div");
             el.className = "fc-ae";
             el.innerHTML = `<i></i><span>${numES(mm, 1)}</span>`;
@@ -2420,7 +2518,7 @@ async function abrirFichaCuenca() {
         if (!saihDentro || mapa3d !== m) return;
         if (!saihDentro.length) { set("fc-saih", "No hay pluviometros SAIH dentro de la cuenca."); return; }
         const h = horas, vals = saihDentro.map(e => ({ e, mm: saihPrec(e, h) })).filter(x => x.mm != null).sort((a, b) => b.mm - a.mm);
-        for (const { e, mm } of vals) {
+        if (fu === "radar") for (const { e, mm } of vals) {
             const el = document.createElement("div");
             el.className = "fc-ae fc-sh";
             el.innerHTML = `<i></i><span>${numES(mm, 1)}</span>`;
@@ -2487,24 +2585,29 @@ async function abrirFichaCuenca() {
         aforos = l;
         if (m.isStyleLoaded()) pintarAforosFicha(); else m.once("load", pintarAforosFicha);
     }).catch(err => set("fc-aforos", `<span style="color:#ff6b6b;">No se pudieron leer los aforos: ${escapeHtml(err.message)}</span>`));
-    document.querySelectorAll("#fc-per button").forEach(b => b.onclick = () => {
-        document.querySelectorAll("#fc-per button").forEach(x => x.classList.toggle("on", x === b));
-        horas = +b.dataset.h; pintarLluvia();
+    document.querySelectorAll("#fc-fu button").forEach(b => b.onclick = () => {
+        document.querySelectorAll("#fc-fu button").forEach(x => x.classList.toggle("on", x === b));
+        fu = b.dataset.fu; botonesPer(); pintarLluvia();
     });
     document.querySelectorAll("#fc-graf button").forEach(b => b.onclick = () => {
         document.querySelectorAll("#fc-graf button").forEach(x => x.classList.toggle("on", x === b));
         graf = b.dataset.g; pintarLluvia();
     });
+    // La prevision se lee a la vez que el radar; en su boton sale ya lo previsto en 24 h
+    cargarArome((k, t) => { if (fu === "arome") set("fc-hasta", `Leyendo la prevision... ${k}/${t} h`); }).then(D => {
+        if (mapa3d !== m) return;
+        dP = D; celdasP = celdasCuenca(D, c.geom);
+        if (!celdasP) { errP = "la cuenca queda fuera del dominio de AROME (no cubre el sur de ~38° N, la punta oeste de Galicia ni Canarias)"; set("fc-fu-ar", "AROME · fuera de su zona"); }
+        else { const mm = mediaPeriodo(D, celdasP, 24); set("fc-fu-ar", mm == null ? "AROME · sin datos aqui" : `AROME · ${fmtMm(mm)} mm en 24 h`); }
+    }).catch(err => { errP = err.message; set("fc-fu-ar", "AROME · no disponible"); })
+        .finally(() => { if (fu === "arome") pintarLluvia(); });
     try {
-        d = await cargarLluvia((k, t) => set("fc-hasta", `Leyendo el radar... ${k}/${t} h`));
+        d = await cargarLluvia((k, t) => { if (fu === "radar") set("fc-hasta", `Leyendo el radar... ${k}/${t} h`); });
         if (mapa3d !== m) return;
         celdas = celdasCuenca(d, c.geom);
         if (!celdas) throw new Error("la cuenca queda fuera del compuesto de OPERA (no incluye Canarias)");
-        await pintarLluvia();
-    } catch (err) {
-        set("fc-hasta", `<span style="color:#ff6b6b;">No se pudo leer el radar: ${escapeHtml(err.message)}</span>`);
-        set("fc-media", "-"); set("fc-max", "-");
-    }
+    } catch (err) { errR = err.message; }
+    if (fu === "radar") await pintarLluvia();
 }
 function cerrarCuenca3D(desdeHistorial) {
     const v = document.getElementById("v3d");
@@ -2524,11 +2627,14 @@ const LLUVIA_ESCALA = [   // [desde mm, color]
 ].map(([v, c]) => [v, [parseInt(c.slice(1, 3), 16), parseInt(c.slice(3, 5), 16), parseInt(c.slice(5, 7), 16)]]);
 const LLUVIA_BOUNDS = [[35.4, -10.0], [44.4, 5.0]];   // lat/lon de la imagen (Peninsula y Baleares)
 const LLUVIA_ANCHO = 900;                            // px (~1,6 km)
-let lluviaCapa = null, lluviaLeyenda = null, lluviaHorasSel = 24, lluviaLut = null;
+let lluviaCapa = null, lluviaLeyenda = null, lluviaHorasSel = 24, lluviaLut = {};
+// La capa muestra lo que ha llovido (radar) o lo que va a llover (AROME), cada una con su periodo
+let lluviaFuente = "radar", aromeHorasSel = 24;
+const PERIODOS = { radar: [1, 3, 6, 12, 24], arome: [1, 3, 6, 12, 24, 48] };
 
-// Para cada pixel de la imagen (Web Mercator), la celda OPERA que le toca
+// Para cada pixel de la imagen (Web Mercator), la celda de la rejilla (OPERA o AROME) que le toca
 function lutLluvia(d) {
-    if (lluviaLut) return lluviaLut;
+    if (lluviaLut[d.proj]) return lluviaLut[d.proj];
     const [[s, w], [n, e]] = LLUVIA_BOUNDS, merc = lat => Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
     const W = LLUVIA_ANCHO, H = Math.round(W * (merc(n) - merc(s)) / ((e - w) * Math.PI / 180));
     const idx = new Int32Array(W * H);
@@ -2536,12 +2642,13 @@ function lutLluvia(d) {
         const lat = Math.atan(Math.sinh(merc(n) - (j + 0.5) / H * (merc(n) - merc(s)))) * 180 / Math.PI;
         for (let i = 0; i < W; i++) idx[j * W + i] = celdaLluvia(d, w + (i + 0.5) / W * (e - w), lat);
     }
-    return (lluviaLut = { W, H, idx });
+    return (lluviaLut[d.proj] = { W, H, idx });
 }
 function imagenLluvia(d, h) {
     const { W, H, idx } = lutLluvia(d);
     const acc = new Float32Array(d.W * d.H).fill(-1);    // -1 = sin cobertura
-    for (let i = LLUVIA_HORAS - h; i < LLUVIA_HORAS; i++) {
+    const [i0, i1] = tramoH(d, h);
+    for (let i = i0; i < i1; i++) {
         const v = d.horas[i].v;
         if (!v) continue;
         for (let k = 0; k < v.length; k++) if (v[k] !== LLUVIA_SIN) acc[k] = (acc[k] < 0 ? 0 : acc[k]) + v[k] / 100;
@@ -2564,24 +2671,41 @@ function imagenLluvia(d, h) {
     return { url: cv.toDataURL("image/png"), maxMm };
 }
 function htmlLeyendaLluvia(estado) {
-    const bts = [1, 3, 6, 12, 24].map(h => `<button data-h="${h}" class="${h === lluviaHorasSel ? "on" : ""}">${h} h</button>`).join("");
+    const prev = lluviaFuente === "arome", sel = prev ? aromeHorasSel : lluviaHorasSel;
+    const fu = `<button data-fu="radar" class="${prev ? "" : "on"}">Ha llovido (radar)</button><button data-fu="arome" class="${prev ? "on" : ""}">Va a llover (AROME)</button>`;
+    const bts = PERIODOS[lluviaFuente].map(h => `<button data-h="${h}" class="${h === sel ? "on" : ""}">${h} h</button>`).join("");
     const esc = LLUVIA_ESCALA.map(([v, c]) => `<span style="background:rgb(${c})" title="desde ${v} mm"></span>`).join("");
     const lab = LLUVIA_ESCALA.map(([v]) => `<i>${v}</i>`).join("");
-    return `<div class="ll-bts">${bts}</div><div class="ll-esc">${esc}</div><div class="ll-lab">${lab}</div>
-<div class="ll-est">${estado}</div><div class="ll-fuente"><span class="ll-sin"></span> sin cobertura · OPERA/EUMETNET (AEMET), CC BY 4.0 · tope 100 mm/h (granizo) · Canarias no incluida</div>`;
+    const fuente = prev ? "Prevision del modelo AROME de Meteo-France (Etalab 2.0) · no cubre el sur de ~38° N (Guadalquivir, Andalucia oriental, sur de Murcia), la punta oeste de Galicia ni Canarias"
+        : "OPERA/EUMETNET (AEMET), CC BY 4.0 · tope 100 mm/h (granizo) · Canarias no incluida";
+    return `<div class="ll-bts">${fu}</div><div class="ll-bts">${bts}</div><div class="ll-esc">${esc}</div><div class="ll-lab">${lab}</div>
+<div class="ll-est">${estado}</div><div class="ll-fuente"><span class="ll-sin"></span> sin ${prev ? "datos" : "cobertura"} · ${fuente}</div>`;
 }
 async function pintarCapaLluvia() {
     const caja = lluviaLeyenda.getContainer(), est = t => { const e = caja.querySelector(".ll-est"); if (e) e.innerHTML = t; };
     caja.innerHTML = htmlLeyendaLluvia("Cargando...");
+    if (lluviaFuente === "arome") return pintarCapaArome(est);
     try {
-        const d = await cargarLluvia((n, t) => est(`Cargando el radar... ${n}/${t} h`));
-        if (!lluviaCapa) return;
+        const d = await cargarLluvia((n, t) => lluviaFuente === "radar" && est(`Cargando el radar... ${n}/${t} h`));
+        if (!lluviaCapa || lluviaFuente !== "radar") return;
         const { url, maxMm } = imagenLluvia(d, lluviaHorasSel);
         lluviaCapa.setUrl(url);
         const faltan = d.horas.slice(-lluviaHorasSel).filter(x => !x.v).length;
         const desde = new Date(d.fin - lluviaHorasSel * 3600000);
         est(`${lluviaHorasSel === 24 ? `Ultimas 24 h, hasta las ${horaLocal(d.fin)}` : `De ${horaLocal(desde)} a ${horaLocal(d.fin)}`} · max ${fmtMm(maxMm)} mm${faltan ? ` · <span style="color:#FFB74D">faltan ${faltan} h</span>` : ""}<span class="ll-ayuda"><br>Pulse en el mapa para ver el valor de un punto</span>`);
-    } catch (e) { est(`<span style="color:#ff6b6b">No se pudo leer el radar: ${escapeHtml(e.message)}</span>`); }
+    } catch (e) { if (lluviaFuente === "radar") est(`<span style="color:#ff6b6b">No se pudo leer el radar: ${escapeHtml(e.message)}</span>`); }
+}
+async function pintarCapaArome(est) {
+    try {
+        const d = await cargarArome((n, t) => lluviaFuente === "arome" && est(`Cargando la prevision... ${n}/${t} h`));
+        if (!lluviaCapa || lluviaFuente !== "arome") return;
+        const [, i1] = tramoH(d, aromeHorasSel);
+        const { url, maxMm } = imagenLluvia(d, aromeHorasSel);
+        lluviaCapa.setUrl(url);
+        const faltan = d.horas.slice(0, i1).filter(x => !x.v).length;
+        est(`De ahora al ${fechaHora(d.horas[i1 - 1].fin)}${i1 < aromeHorasSel ? ` <span style="color:#FFB74D">(la prevision solo llega a ${i1} h)</span>` : ""} · max ${fmtMm(maxMm)} mm${faltan ? ` · <span style="color:#FFB74D">faltan ${faltan} h</span>` : ""}`
+            + `<br><span style="color:#8892b0">Ejecucion del modelo: ${fechaHora(d.ejecucion)}</span><span class="ll-ayuda"><br>Pulse en el mapa para ver el valor de un punto</span>`);
+    } catch (e) { if (lluviaFuente === "arome") est(`<span style="color:#ff6b6b">No se pudo leer la prevision: ${escapeHtml(e.message)}</span>`); }
 }
 function alternarCapaLluvia() {
     if (lluviaCapa) {
@@ -2598,11 +2722,17 @@ function alternarCapaLluvia() {
 }
 // Valor de un punto al pulsar en el mapa con la capa encendida
 map.on("click", async e => {
-    if (!lluviaCapa || cuencaPicking || e.usadoCuenca || !lluviaCarga) return;
-    let d; try { d = await lluviaCarga.p; } catch { return; }
+    const prev = lluviaFuente === "arome", carga = prev ? aromeCarga : lluviaCarga;
+    if (!lluviaCapa || cuencaPicking || e.usadoCuenca || !carga) return;
+    let d; try { d = await carga.p; } catch { return; }
     const k = celdaLluvia(d, e.latlng.lng, e.latlng.lat);
-    const fila = h => { const v = k < 0 ? null : acumCelda(d, k, h); return `${h} h: <b>${v == null ? "sin cobertura" : fmtMm(v) + " mm"}</b>`; };
-    L.popup().setLatLng(e.latlng).setContent(`<div style="font-size:12px">Lluvia por radar (celda de 2 km)<br>${[1, 3, 6, 12, 24].map(fila).join("<br>")}<br><span style="color:#777">hasta las ${horaLocal(d.fin)}</span></div>`).openOn(map);
+    const fila = h => {
+        const v = k < 0 ? null : acumCelda(d, k, h), n = tramoH(d, h)[1];
+        return `${prev ? "Proximas " : ""}${prev && n < h ? n : h} h: <b>${v == null ? (prev ? "sin datos" : "sin cobertura") : fmtMm(v) + " mm"}</b>`;
+    };
+    const tit = prev ? "Lluvia prevista por AROME (celda de 2 km)" : "Lluvia por radar (celda de 2 km)";
+    const pie = prev ? `desde ahora · ejecucion del ${fechaHora(d.ejecucion)}` : `hasta las ${horaLocal(d.fin)}`;
+    L.popup().setLatLng(e.latlng).setContent(`<div style="font-size:12px">${tit}<br>${PERIODOS[lluviaFuente].map(fila).join("<br>")}<br><span style="color:#777">${pie}</span></div>`).openOn(map);
 });
 
 // --- Estaciones de AEMET (observacion convencional, ultimas ~12 h, cada hora) ---
@@ -2936,7 +3066,7 @@ map.on("moveend", () => { if (!saihCapa) return; clearTimeout(saihMover); saihMo
 // Cada capa se enciende y se apaga con su casilla; al encenderla salen debajo sus controles
 // y su leyenda. El panel se puede plegar.
 const CAPAS_DATOS = [
-    ["lluvia", "🌧️", "Lluvia por radar", "mm acumulados (OPERA)", () => alternarCapaLluvia()],
+    ["lluvia", "🌧️", "Lluvia: radar y prevision", "mm acumulados: ultimas 24 h (radar OPERA) y proximas 48 h (modelo AROME)", () => alternarCapaLluvia()],
     ["aemet", "🌡️", "Estaciones de AEMET", "temperatura, lluvia, viento, humedad", () => alternarAemet()],
     ["saih", "🌊", "SAIH de las confederaciones", "caudal, nivel, lluvia, temperatura", () => alternarSaih()]
 ];
@@ -2957,7 +3087,8 @@ panelCapas.onAdd = () => {
             const pleg = div.classList.toggle("pc-plegado");
             t.textContent = pleg ? "▸" : "▾";
             try { localStorage.setItem("panelCapasPlegado", pleg ? "1" : ""); } catch { }
-        } else if (k === "lluvia" && t.dataset?.h) { lluviaHorasSel = +t.dataset.h; pintarCapaLluvia(); }
+        } else if (k === "lluvia" && t.dataset?.h) { if (lluviaFuente === "arome") aromeHorasSel = +t.dataset.h; else lluviaHorasSel = +t.dataset.h; pintarCapaLluvia(); }
+        else if (k === "lluvia" && t.dataset?.fu) { lluviaFuente = t.dataset.fu; pintarCapaLluvia(); }
         else if (k === "aemet" && t.dataset?.v) { aemetVar = t.dataset.v; pintarAemet(); }
         else if (k === "aemet" && t.dataset?.h) { aemetHoras = +t.dataset.h; pintarAemet(); }
         else if (k === "saih" && t.dataset?.sv) { saihVar = t.dataset.sv; pintarSaih(); }

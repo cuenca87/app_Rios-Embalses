@@ -1,4 +1,4 @@
-﻿const CACHE_NAME = "rios-visor-v29";
+﻿const CACHE_NAME = "rios-visor-v30";
 const ASSETS = [
   "./index.html",
   "./icon.svg",
@@ -47,6 +47,8 @@ self.addEventListener("fetch", (e) => {
   // el servidor fallaba, Safari mostrara "FetchEvent.respondWith received an
   // error: TypeError: Load failed" en lugar del error real.
   if (LIVE_HOSTS.some((h) => url.hostname.endsWith(h))) return;
+  // Prevision AROME que publica la app del tiempo (mismo dominio, se renueva cada 3 h)
+  if (url.pathname.startsWith("/meteo/")) return;
 
   // HTML: red primero (para que los cambios publicados lleguen siempre),
   // con la copia en cache solo como respaldo sin conexion.
