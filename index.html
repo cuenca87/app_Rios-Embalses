@@ -2693,6 +2693,191 @@ const BotonAemet = L.Control.extend({
 });
 new BotonAemet().addTo(map);
 
+// --- Capa SAIH (Observatorio del Agua, via el proxy de Argos) ---
+// Cada serie es una peticion al Worker de Cloudflare (cuota diaria): la red completa se
+// pinta con la lista de estaciones (una peticion por variable) y los valores solo se piden
+// para las estaciones a la vista con el mapa acercado, con cache de 10 min.
+const ARGOS_PT = "01929098-d102-75a2-8a31-59482cbdc331";
+const SAIH_ZOOM = 9, SAIH_MAX_VISTA = 150;
+const SAIH_VARS = {
+    q: { nom: "Caudal", ud: "m³/s", icon: "river_flow", leyenda: [["#EF6C00", "sube"], ["#66BB6A", "estable"], ["#42A5F5", "baja"]] },
+    n: { nom: "Nivel", ud: "m", icon: "river_level", leyenda: [["#9E9E9E", "sin umbral"], ["#66BB6A", "normal"], ["#FFFF00", "amarillo"], ["#FFAE19", "naranja"], ["#DA1616", "rojo"]] },
+    p: { nom: "Lluvia", ud: "mm", icon: "rain", esc: AEMET_VARS.prec.esc },
+    t: { nom: "Temperatura", ud: "°C", icon: "temperature", esc: AEMET_VARS.ta.esc }
+};
+const saihProd = k => ({ q: ARGOS_PF, n: ARGOS_PL, p: ARGOS_PP, t: ARGOS_PT })[k];
+const saihListas = {}, saihSeries = new Map();
+function saihLista(k) {
+    return saihListas[k] ??= (async () => {
+        const fs = await argosWfs(saihProd(k), SAIH_VARS[k].icon, "-19,27,5,44.5");
+        if (!fs.length) throw new Error("no se pudo leer la lista de estaciones");
+        return fs.filter(f => f.geometry?.coordinates).map(f => ({ id: f.properties.id_element, nombre: f.properties.name, demar: f.properties.cod_demar, lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] }));
+    })().catch(e => { delete saihListas[k]; throw e; });
+}
+// Peticiones de series de 6 en 6 para no saturar el proxy
+let saihActivas = 0;
+const saihCola = [];
+function saihTurno(fn) {
+    return new Promise((ok, ko) => {
+        const run = () => { saihActivas++; fn().then(ok, ko).finally(() => { saihActivas--; saihCola.shift()?.(); }); };
+        saihActivas < 6 ? run() : saihCola.push(run);
+    });
+}
+function saihSerie(k, id) {
+    const clave = k + "|" + id, c = saihSeries.get(clave);
+    if (c && Date.now() - c.t < 10 * 60000) return c.p;
+    const p = saihTurno(() => argosChart(saihProd(k), id)).then(r => r?.dates?.length
+        ? { t: r.dates.map(x => Date.parse(x)), v: r.values.map(x => x == null ? null : +x), umb: (r.thresholds || []).slice().sort((a, b) => a.value - b.value) }
+        : null);
+    saihSeries.set(clave, { t: Date.now(), p });
+    p.catch(() => saihSeries.delete(clave));
+    return p;
+}
+let saihCapa = null, saihLeyenda = null, saihVar = "q", saihHoras = 3, saihGen = 0;
+// Valor y color de una estacion para la variable elegida (null si no hay dato reciente)
+function saihValor(k, s) {
+    if (!s) return null;
+    if (k === "p") { const mm = saihPrec(s, saihHoras); return mm == null ? null : { v: mm, txt: numES(mm, 1), col: colorEsc(SAIH_VARS.p.esc, mm) }; }
+    const u = ultimoYCambio(s, 3);
+    if (!u || Date.now() - u.t > 3 * 3600000) return null;
+    if (k === "t") return { v: u.v, txt: fmtVar(u.v, 1), col: colorEsc(SAIH_VARS.t.esc, u.v) };
+    if (k === "n") {
+        let col = s.umb.length ? "#66BB6A" : "#9E9E9E";
+        for (const x of s.umb) if (u.v >= x.value) col = x.color;
+        return { v: u.v, txt: numES(u.v, 2), col };
+    }
+    const rel = u.dif == null ? 0 : u.dif / Math.max(u.v - u.dif, 0.05);
+    const tend = u.dif == null || Math.abs(rel) < 0.05 ? 0 : rel > 0 ? 1 : -1;
+    return { v: u.v, txt: fmtQ(u.v) + (tend > 0 ? " ▲" : tend < 0 ? " ▼" : ""), col: SAIH_VARS.q.leyenda[1 - tend][0] };
+}
+function htmlLeyendaSaih(estado) {
+    const x = SAIH_VARS[saihVar];
+    const vs = Object.entries(SAIH_VARS).map(([k, v]) => `<button data-sv="${k}" class="${k === saihVar ? "on" : ""}">${v.nom}</button>`).join("");
+    const hs = saihVar === "p" ? `<div class="ll-bts">${[1, 3, 6, 12, 24].map(h => `<button data-sh="${h}" class="${h === saihHoras ? "on" : ""}">${h} h</button>`).join("")}</div>` : "";
+    const esc = x.esc
+        ? `<div class="ll-esc">${x.esc.map(([, c]) => `<span style="background:${c}"></span>`).join("")}</div><div class="ll-lab">${x.esc.map(([v]) => `<i>${v}</i>`).join("")}</div>`
+        : `<div style="display:flex;flex-wrap:wrap;gap:2px 8px;font-size:10px;margin:3px 0;">${x.leyenda.map(([c, t]) => `<span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${c};vertical-align:-1px;"></span> ${t}</span>`).join("")}</div>`
+            + (saihVar === "q" ? `<div style="font-size:10px;color:#8892b0">tendencia en las ultimas 3 h</div>` : `<div style="font-size:10px;color:#8892b0">umbrales de aviso de la confederacion</div>`);
+    return `<b>🌊 SAIH de las confederaciones</b><div class="ll-bts">${vs}</div>${hs}${esc}
+<div class="ll-est">${estado}</div><div class="ll-fuente">Observatorio del Agua (MITECO) · ${x.ud} · sin validar</div>`;
+}
+async function pintarSaih(soloMarcas) {
+    if (!saihCapa) return;
+    const gen = ++saihGen, k = saihVar;
+    const caja = saihLeyenda.getContainer(), est = t => { const e = caja.querySelector(".ll-est"); if (e) e.innerHTML = t; };
+    if (!soloMarcas) caja.innerHTML = htmlLeyendaSaih("Cargando las estaciones...");
+    try {
+        const lista = await saihLista(k);
+        if (gen !== saihGen || !saihCapa) return;
+        const vista = map.getBounds().pad(0.1), enVista = lista.filter(e => vista.contains([e.lat, e.lon]));
+        const valores = map.getZoom() >= SAIH_ZOOM && enVista.length <= SAIH_MAX_VISTA;
+        const gris = e => L.circleMarker([e.lat, e.lon], { radius: valores ? 4 : 3, color: "#1a1a2e", weight: 1, fillColor: "#90A4AE", fillOpacity: 0.85 })
+            .on("click", ev => { L.DomEvent.stop(ev); popupSaih(k, e); });
+        saihCapa.clearLayers();
+        (valores ? enVista : lista).forEach(e => gris(e).addTo(saihCapa));
+        if (!valores) {
+            est(`${numES(lista.length)} estaciones de ${SAIH_VARS[k].nom.toLowerCase()}<span class="ll-ayuda"><br>Acerque el mapa para ver los valores · pulse una estacion para ver sus datos</span>`);
+            return;
+        }
+        est(`Leyendo ${enVista.length} estaciones...`);
+        let n = 0, hechas = 0;
+        const sinDatos = new Set();
+        await Promise.all(enVista.map(async e => {
+            const s = await saihSerie(k, e.id).catch(() => null);
+            hechas++;
+            if (gen !== saihGen || !saihCapa) return;
+            if (!s) sinDatos.add(e.id);
+            const r = saihValor(k, s);
+            if (r) {
+                n++;
+                L.marker([e.lat, e.lon], { icon: L.divIcon({ className: "ae-et", html: `<span style="background:${r.col};color:${textoSobre(r.col)}">${r.txt}</span>`, iconSize: null }), zIndexOffset: Math.round(r.v * 10) })
+                    .on("click", ev => { L.DomEvent.stop(ev); popupSaih(k, e); }).addTo(saihCapa);
+            }
+            if (hechas % 10 === 0) est(`Leyendo estaciones... ${hechas}/${enVista.length}`);
+        }));
+        if (gen !== saihGen || !saihCapa) return;
+        const huecos = demarSinDatos(enVista, e => !sinDatos.has(e.id));
+        est(`${n} de ${enVista.length} estaciones con dato reciente${huecos.length ? `<br><span style="color:#FFB74D">${huecos.join(", ")}: no publica sus datos</span>` : ""}<span class="ll-ayuda"><br>Pulse una estacion para ver sus datos (en gris, sin dato)</span>`);
+    } catch (err) { if (gen === saihGen) est(`<span style="color:#ff6b6b">No se pudo leer el SAIH: ${escapeHtml(err.message)}</span>`); }
+}
+// Ficha de una estacion: caudal y nivel (aforos) o lluvia y temperatura, con su grafico
+async function popupSaih(k, e) {
+    const pop = L.popup({ maxWidth: 380 }).setLatLng([e.lat, e.lon]).setContent(`<b>${escapeHtml(nombreEst(e.nombre))}</b><br>Cargando...`).openOn(map);
+    const aforo = k === "q" || k === "n";
+    const [a, b] = await Promise.all((aforo ? ["q", "n"] : ["p", "t"]).map(x => saihSerie(x, e.id).catch(() => null)));
+    const ult = s => ultimoYCambio(s, 3), cuando = t => new Date(t).toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+    const filas = [];
+    let graf = "", tUlt = 0;
+    if (aforo) {
+        const q = ult(a), nv = ult(b), umb = b?.umb || [];
+        if (q) { filas.push(["Caudal", `<b>${fmtQ(q.v)} m³/s</b>${q.dif != null ? ` <span style="color:#777">(${q.dif >= 0 ? "+" : "−"}${fmtQ(Math.abs(q.dif))} en 3 h)</span>` : ""}`]); tUlt = Math.max(tUlt, q.t); }
+        if (nv) {
+            let av = null; for (const x of umb) if (nv.v >= x.value) av = x;
+            filas.push(["Nivel", `<b>${numES(nv.v, 2)} m</b>${av ? ` <span style="color:${av.color};text-shadow:0 0 1px #000">⚠ umbral ${numES(av.value, 2)} m</span>` : ""}`]);
+            tUlt = Math.max(tUlt, nv.t);
+        }
+        if (umb.length) filas.push(["Umbrales de nivel", umb.map(x => `<span style="color:${x.color};text-shadow:0 0 1px #000">●</span> ${numES(x.value, 2)} m`).join(" ")]);
+        graf = graficoAforo({ q: a, n: b, umb }, 3, true);
+    } else {
+        const tt = ult(b);
+        if (a?.t.length) { filas.push(["Lluvia", [1, 3, 6, 12, 24].map(h => { const p = saihPrec(a, h); return p == null ? null : `${h} h: <b>${numES(p, 1)}</b>`; }).filter(Boolean).join(" · ") + " mm"]); tUlt = Math.max(tUlt, a.t[a.t.length - 1]); }
+        if (tt) { filas.push(["Temperatura", `<b>${numES(tt.v, 1)} °C</b>`]); tUlt = Math.max(tUlt, tt.t); }
+        // Agrupado por horas para el grafico de barras y linea de las estaciones
+        const horas = new Map();
+        const meter = (s, campo) => s?.t.forEach((t, i) => {
+            if (s.v[i] == null) return;
+            const hk = Math.ceil(t / 3600000) * 3600000, o = horas.get(hk) || { t: hk, prec: null, ta: null };
+            o[campo] = campo === "prec" ? (o.prec || 0) + s.v[i] : s.v[i];
+            horas.set(hk, o);
+        });
+        meter(a, "prec"); meter(b, "ta");
+        const obs = [...horas.values()].sort((x, y) => x.t - y.t).slice(-24);
+        if (obs.length) graf = graficoEstacion({ obs });
+    }
+    const html = `<div style="font-size:12px;min-width:250px"><b>${escapeHtml(nombreEst(e.nombre))}</b> <span style="color:#777">(${SAIH_DEMAR[e.demar] || "SAIH"})</span><br>`
+        + (filas.length ? `<span style="color:#777">Ultimo dato: ${cuando(tUlt)}</span><table style="margin-top:4px;border-collapse:collapse">${filas.map(([x, y]) => `<tr><td style="color:#555;padding-right:8px;vertical-align:top">${x}</td><td>${y}</td></tr>`).join("")}</table>${graf}`
+            : `<span style="color:#b00">Sin datos en el Observatorio del Agua${e.demar == 21 ? " (la CH Duero no los publica)" : ""}.</span>`)
+        + `<br><span style="color:#999;font-size:10px">SAIH via Observatorio del Agua (MITECO) · tiempo real sin validar</span></div>`;
+    if (map.hasLayer(pop)) pop.setContent(html);
+}
+function alternarSaih() {
+    const bt = document.querySelector(".saih-toggle");
+    if (saihCapa) {
+        map.removeLayer(saihCapa); map.removeControl(saihLeyenda);
+        saihCapa = saihLeyenda = null; saihGen++; bt?.classList.remove("on");
+        return;
+    }
+    bt?.classList.add("on");
+    saihCapa = L.layerGroup().addTo(map);
+    saihLeyenda = L.control({ position: "bottomright" });
+    saihLeyenda.onAdd = () => {
+        const div = L.DomUtil.create("div", "ll-leyenda");
+        L.DomEvent.disableClickPropagation(div);
+        div.addEventListener("click", ev => {
+            ev.stopPropagation();
+            const t = ev.target;
+            if (t.dataset?.sv) { saihVar = t.dataset.sv; pintarSaih(); }
+            else if (t.dataset?.sh) { saihHoras = +t.dataset.sh; pintarSaih(); }
+        });
+        return div;
+    };
+    saihLeyenda.addTo(map);
+    pintarSaih();
+}
+let saihMover = null;
+map.on("moveend", () => { if (!saihCapa) return; clearTimeout(saihMover); saihMover = setTimeout(() => pintarSaih(true), 500); });
+const BotonSaih = L.Control.extend({
+    options: { position: "topleft" },
+    onAdd() {
+        const a = L.DomUtil.create("a", "ll-toggle saih-toggle leaflet-bar");
+        a.href = "#"; a.title = "SAIH de las confederaciones (caudal, nivel, lluvia, temperatura)"; a.textContent = "🌊";
+        L.DomEvent.disableClickPropagation(a);
+        L.DomEvent.on(a, "click", ev => { L.DomEvent.preventDefault(ev); alternarSaih(); });
+        return a;
+    }
+});
+new BotonSaih().addTo(map);
+
 // --- Download ---
 function downloadResult() {
     if (!lastGeoJSON) return;
@@ -2942,7 +3127,7 @@ function avisoAforo(a) {
 }
 const fmtQ = v => numES(v, v < 10 ? 2 : v < 100 ? 1 : 0);
 // Hidrograma de las ultimas 24 h (caudal, o nivel si no hay caudal) con los umbrales de nivel
-function graficoAforo(a, h) {
+function graficoAforo(a, h, claro) {
     const k = a.q?.t.length ? "q" : "n", s = a[k];
     if (!s?.t.length) return "";
     const W = 340, H = 150, m = { l: 36, r: 10, t: 16, b: 20 };
@@ -2957,15 +3142,15 @@ function graficoAforo(a, h) {
     const x = t => m.l + (W - m.l - m.r) * (t - t0) / (t1 - t0), y = v => m.t + (H - m.t - m.b) * (1 - (v - vmin) / (vmax - vmin));
     const dec = vmax - vmin < 0.1 ? 3 : vmax < 10 ? 2 : vmax < 100 ? 1 : 0;
     let g = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;" font-size="9" fill="#8892b0">`;
-    g += `<rect x="${x(t1 - h * 3600000)}" y="${m.t}" width="${x(t1) - x(t1 - h * 3600000)}" height="${H - m.t - m.b}" fill="#CE93D8" opacity="0.07"/>`;
+    g += `<rect x="${x(t1 - h * 3600000)}" y="${m.t}" width="${x(t1) - x(t1 - h * 3600000)}" height="${H - m.t - m.b}" fill="${claro ? "#8E24AA" : "#CE93D8"}" opacity="0.07"/>`;
     [0, 0.5, 1].forEach(f => {
         const v = vmin + (vmax - vmin) * f;
-        g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="#0f3460"/><text x="${m.l - 3}" y="${y(v) + 3}" text-anchor="end">${numES(v, dec)}</text>`;
+        g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="${claro ? "#e0e0e0" : "#0f3460"}"/><text x="${m.l - 3}" y="${y(v) + 3}" text-anchor="end">${numES(v, dec)}</text>`;
     });
     for (const u of umb) if (u.value <= vmax) g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(u.value)}" y2="${y(u.value)}" stroke="${u.color}" stroke-dasharray="4 3"><title>Umbral ${u.conditionSymbol || "≥"} ${numES(u.value, 2)} m</title></line>`;
     g += `<text x="2" y="${m.t - 6}" font-size="8">${k === "q" ? "m³/s" : "m"}</text>`;
     for (let hh = 0; hh <= 24; hh += 6) { const t = t1 - hh * 3600000; g += `<text x="${x(t)}" y="${H - 6}" text-anchor="middle">${horaLocal(new Date(t))}</text>`; }
-    g += `<polyline points="${pts.filter(p => p[0] >= t0).map(p => `${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join(" ")}" fill="none" stroke="#CE93D8" stroke-width="2"/>`;
+    g += `<polyline points="${pts.filter(p => p[0] >= t0).map(p => `${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join(" ")}" fill="none" stroke="${claro ? "#8E24AA" : "#CE93D8"}" stroke-width="2"/>`;
     return g + "</svg>";
 }
 
