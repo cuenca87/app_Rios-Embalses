@@ -2083,6 +2083,21 @@ function cargarMaplibre() {
 }
 const WMTS_IGN = (srv, capa, fmt) => `https://www.ign.es/wmts/${srv}?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${capa}&STYLE=default&FORMAT=${fmt}&TILEMATRIXSET=GoogleMapsCompatible&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}`;
 const TERRARIUM = "https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png";
+// La capa de ortoimagen del IGN es Sentinel-2 (verde, 10 m) hasta el zoom 13 y ortofoto aerea
+// PNOA desde el 14. En 3D, lo lejano usa teselas de menos zoom y se veian dos imagenes. El IGN
+// elige la imagen por la escala de la peticion: para los zooms 12 y 13 se pide al WMS la tesela
+// con los pixeles del zoom 14 (1024 o 512 px) y devuelve la aerea. El 11 pesaria ~0,9 MB por
+// tesela: por debajo del 12 se deja Sentinel (queda muy al fondo).
+const ORTO_TESELAS = "https://orto-ign/{z}/{x}/{y}";
+function urlOrtoIgn(url) {
+    const m = url.match(/^https:\/\/orto-ign\/(\d+)\/(\d+)\/(\d+)$/);
+    if (!m) return null;
+    const [z, x, y] = m.slice(1).map(Number);
+    if (z >= 14 || z < 12) return WMTS_IGN("pnoa-ma", "OI.OrthoimageCoverage", "image/jpeg").replace("{z}", z).replace("{x}", x).replace("{y}", y);
+    const R = 20037508.342789244, s = 2 * R / 2 ** z, px = 256 * 2 ** (14 - z);
+    return `https://www.ign.es/wms-inspire/pnoa-ma?SERVICE=WMS&REQUEST=GetMap&VERSION=1.3.0&LAYERS=OI.OrthoimageCoverage&STYLES=&CRS=EPSG:3857`
+        + `&BBOX=${-R + x * s},${R - (y + 1) * s},${-R + (x + 1) * s},${R - y * s}&WIDTH=${px}&HEIGHT=${px}&FORMAT=image/jpeg`;
+}
 
 async function abrirFichaCuenca() {
     const c = cuencaActual;
@@ -2133,10 +2148,11 @@ async function abrirFichaCuenca() {
     const vacio = turf.featureCollection([]);
     mapa3d = new maplibregl.Map({
         container: "v3d-mapa", maxPitch: 80, attributionControl: { compact: true },
+        transformRequest: (url, tipo) => { const u = tipo === "Tile" && urlOrtoIgn(url); return u ? { url: u } : undefined; },
         style: {
             version: 8,
             sources: {
-                orto: { type: "raster", tiles: [WMTS_IGN("pnoa-ma", "OI.OrthoimageCoverage", "image/jpeg")], tileSize: 256, maxzoom: 19, attribution: "PNOA © IGN" },
+                orto: { type: "raster", tiles: [ORTO_TESELAS], tileSize: 256, maxzoom: 19, attribution: "PNOA © IGN" },
                 mapa: { type: "raster", tiles: [WMTS_IGN("ign-base", "IGNBaseTodo", "image/png")], tileSize: 256, maxzoom: 17, attribution: "© IGN" },
                 hidro: { type: "raster", tiles: ["https://servicios.idee.es/wms-inspire/hidrografia?SERVICE=WMS&REQUEST=GetMap&VERSION=1.3.0&LAYERS=HY.Network&STYLES=&CRS=EPSG:3857&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256&FORMAT=image/png&TRANSPARENT=true"], tileSize: 256, attribution: "Hidrografia © IGN" },
                 dem: { type: "raster-dem", tiles: [TERRARIUM], encoding: "terrarium", tileSize: 256, maxzoom: 15, attribution: "Terrain Tiles (AWS)" },

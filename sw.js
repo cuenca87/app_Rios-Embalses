@@ -1,4 +1,4 @@
-﻿const CACHE_NAME = "rios-visor-v26";
+﻿const CACHE_NAME = "rios-visor-v27";
 const ASSETS = [
   "./index.html",
   "./icon.svg",
