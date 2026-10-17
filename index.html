@@ -126,6 +126,8 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
 .fc-ae { display:flex; align-items:center; gap:3px; cursor:default; }
 .fc-ae i { width:9px; height:9px; border-radius:50%; background:#fff; border:2px solid #1565C0; box-sizing:border-box; flex:none; }
 .fc-sh i { border-color:#2E7D32; }
+.fc-af i { border-width:3px; }
+.fc-af span { background:rgba(123,31,162,.92) !important; }
 .fc-sh span { background:rgba(46,125,50,.92) !important; }
 .fc-ae span { background:rgba(21,101,192,.9); color:#fff; font-size:10px; font-weight:700; padding:0 4px; border-radius:3px; white-space:nowrap; }
 .fc-marca { pointer-events:none; display:flex; align-items:center; gap:4px; }
@@ -1684,6 +1686,7 @@ async function calcularCuencaPunto(lon, lat, opts = {}) {
         if (cuencaActual) h += BOTON_LLUVIA + BOTON_FICHA;
         pintar(h);
         lluviaAutomatica();
+        saihEnPanel();
         abrirFichaCuenca();
         showProgress(100, "Completado");
     } catch (e) {
@@ -1727,6 +1730,7 @@ async function cuencaRioCompleto() {
         const box = document.getElementById("result-box");
         box.innerHTML = box.innerHTML.replace(/\n\n<span class="r-label">Calculando cuenca vertiente del rio\.\.\.<\/span>$/, "") + h;
         lluviaAutomatica();
+        saihEnPanel();
         abrirFichaCuenca();
         showProgress(100, "Completado");
     } catch (e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${escapeHtml(e.message)}</span>`); }
@@ -2073,6 +2077,7 @@ async function abrirFichaCuenca() {
 <div id="fc-notas" class="r-info" style="font-size:11px;"></div>
 <label>Pluviometros de AEMET en la cuenca</label><div id="fc-aemet" class="r-info" style="white-space:pre-wrap;">Leyendo AEMET...</div>
 <label>Pluviometros SAIH de la confederacion</label><div id="fc-saih" class="r-info" style="white-space:pre-wrap;">Leyendo el SAIH...</div>
+<label>Caudal y nivel en los aforos SAIH</label><div id="fc-aforos" class="r-info" style="white-space:pre-wrap;">Leyendo los aforos...</div><div id="fc-hidro"></div>
 <label>Vista</label><div class="v3d-bts"><button id="v3d-2d" class="on">Planta</button><button id="v3d-3d">🏔️ 3D</button><button id="v3d-reset">Encuadrar</button><button id="v3d-giro" style="display:none">⟳ Girar</button></div>
 <div id="v3d-exbox" style="display:none;"><label>Exageracion del relieve: <span id="v3d-exv"></span></label><input type="range" id="v3d-ex" min="1" max="5" step="0.5"></div>
 <label>Fondo</label><div class="v3d-bts" id="v3d-fondo"><button data-f="orto" class="on">Ortofoto</button><button data-f="mapa">Mapa IGN</button><button id="v3d-rios" class="on">Red fluvial</button></div>
@@ -2231,6 +2236,7 @@ async function abrirFichaCuenca() {
         set("fc-notas", notas.join(" "));
         pintarAemetFicha();
         pintarSaihFicha();
+        pintarAforosFicha();
         // Marca del punto mas lluvioso
         marcaMax?.remove(); marcaMax = null;
         if (mx && mx.mm >= 0.1) {
@@ -2296,7 +2302,7 @@ async function abrirFichaCuenca() {
             marcasSaih.push(new maplibregl.Marker({ element: el, anchor: "left", offset: [-5, 0] }).setLngLat([e.lon, e.lat]).addTo(m));
         }
         const sin = saihDentro.length - vals.length;
-        const huecos = [...new Set(saihDentro.filter(e => !e.t.length).map(e => SAIH_DEMAR[e.demar] || "su confederacion"))];
+        const huecos = demarSinDatos(saihDentro, e => e.t.length > 0);
         const nota = huecos.length ? `<span style="color:#FFB74D">${huecos.join(", ")}: no publica sus pluviometros en el Observatorio del Agua.</span>\n` : "";
         if (!vals.length) { set("fc-saih", `${nota}${saihDentro.length} pluviometros en la cuenca, sin datos de las ultimas ${h} h.`); return; }
         const media = vals.reduce((a, x) => a + x.mm, 0) / vals.length;
@@ -2306,11 +2312,55 @@ async function abrirFichaCuenca() {
             + (vals.length > 8 ? `\n  y ${vals.length - 8} mas` : "")
             + `\n<span style="font-size:10px">SAIH de las confederaciones hidrograficas, via Observatorio del Agua (MITECO). En el mapa como etiquetas verdes. Datos cada 10-15 min sin validar.</span>`);
     }
-    cargarSaihCuenca(c.geom).then(l => {
+    saihDe(c).then(l => {
         if (mapa3d !== m) return;
         saihDentro = l;
         if (m.isStyleLoaded()) pintarSaihFicha(); else m.once("load", pintarSaihFicha);
     }).catch(err => set("fc-saih", `<span style="color:#ff6b6b;">No se pudo leer el SAIH: ${escapeHtml(err.message)}</span>`));
+    // Aforos SAIH: caudal y nivel actuales, cambio en el periodo e hidrograma del elegido
+    let aforos = null, aforoSel = null, marcasAforo = [];
+    function pintarAforosFicha() {
+        marcasAforo.forEach(x => x.remove()); marcasAforo = [];
+        if (!aforos || mapa3d !== m) return;
+        if (!aforos.length) { set("fc-aforos", "No hay aforos SAIH en la cuenca."); set("fc-hidro", ""); return; }
+        const h = horas, flecha = d => d == null ? "" : Math.abs(d) < 0.005 ? " =" : d > 0 ? ` <span style="color:#EF5350">▲ +` : ` <span style="color:#4FC3F7">▼ `;
+        const cambio = (x, f, ud) => x?.dif == null ? "" : Math.abs(x.dif) < 0.005 ? ` <span style="color:#8892b0">(= en ${h} h)</span>` : `${flecha(x.dif)}${f(Math.abs(x.dif))} ${ud} en ${h} h</span>`;
+        const conDatos = aforos.filter(a => a.q?.t.length || a.n?.t.length);
+        // Primero el del cierre (el mas cercano al punto) y despues por caudal
+        const orden = a => a.dist != null && a.dist < 1 ? -1e9 + a.dist : -(ultimoYCambio(a.q, h)?.v ?? -1);
+        conDatos.sort((a, b) => orden(a) - orden(b));
+        if (!aforoSel || !conDatos.includes(aforoSel)) aforoSel = conDatos[0] || null;
+        const lineas = conDatos.map((a, i) => {
+            const q = ultimoYCambio(a.q, h), nv = ultimoYCambio(a.n, h), av = avisoAforo(a);
+            const viejo = Math.max(q?.t || 0, nv?.t || 0) < Date.now() - 3 * 3600000 ? ` <span style="color:#FFB74D">(dato de ${new Date(Math.max(q?.t || 0, nv?.t || 0)).toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })})</span>` : "";
+            return `<a href="#" data-af="${aforos.indexOf(a)}" style="color:inherit;text-decoration:none;${a === aforoSel ? "background:rgba(206,147,216,.15);" : ""}display:block;padding:1px 3px;border-radius:3px;">`
+                + `<span style="color:${av?.color || "#4CAF50"}">●</span> ${escapeHtml(nombreEst(a.nombre))}${a.dist != null && a.dist < 1 ? " <span style=\"color:#CE93D8\">(cierre)</span>" : ""}${av ? ` <span style="color:${av.color}">⚠ umbral ${numES(av.value, 2)} m</span>` : ""}${viejo}\n`
+                + `   ${q ? `<b style="color:#e0e0e0">${fmtQ(q.v)} m³/s</b>${cambio(q, fmtQ, "m³/s")}` : ""}${q && nv ? " · " : ""}${nv ? `nivel <b style="color:#e0e0e0">${numES(nv.v, 2)} m</b>${cambio(nv, v => numES(v, 2), "m")}` : ""}</a>`;
+        });
+        const sin = aforos.length - conDatos.length;
+        const huecos = demarSinDatos(aforos, a => conDatos.includes(a));
+        set("fc-aforos", (sin && !conDatos.length ? `<span style="color:#FFB74D">${huecos.join(", ")}: no publica sus aforos en el Observatorio del Agua.</span>\n${aforos.length} aforos en la cuenca, sin datos.` : "")
+            + lineas.join("")
+            + (sin && conDatos.length ? `\n${sin} aforo${sin > 1 ? "s" : ""} sin datos.` : "")
+            + (conDatos.length ? `\n<span style="font-size:10px">Pulse un aforo para ver su hidrograma. SAIH de las confederaciones via Observatorio del Agua (MITECO), datos sin validar. En el mapa, etiquetas moradas.</span>` : ""));
+        set("fc-hidro", aforoSel ? `<div class="fc-gtit">${escapeHtml(nombreEst(aforoSel.nombre))} · ${aforoSel.q?.t.length ? "caudal" : "nivel"}, ultimas 24 h</div>` + graficoAforo(aforoSel, h) : "");
+        document.querySelectorAll("#fc-aforos a[data-af]").forEach(el => el.onclick = ev => { ev.preventDefault(); aforoSel = aforos[+el.dataset.af]; pintarAforosFicha(); });
+        for (const a of conDatos) {
+            const q = ultimoYCambio(a.q, h), nv = ultimoYCambio(a.n, h), av = avisoAforo(a);
+            const el = document.createElement("div");
+            el.className = "fc-ae fc-af";
+            el.innerHTML = `<i style="border-color:${av?.color || "#4CAF50"}"></i><span>${q ? fmtQ(q.v) + " m³/s" : numES(nv.v, 2) + " m"}</span>`;
+            el.title = `${nombreEst(a.nombre)} (aforo SAIH)`;
+            el.style.cursor = "pointer";
+            el.onclick = ev => { ev.stopPropagation(); aforoSel = a; pintarAforosFicha(); document.getElementById("fc-hidro")?.scrollIntoView({ behavior: "smooth", block: "nearest" }); };
+            marcasAforo.push(new maplibregl.Marker({ element: el, anchor: "left", offset: [-5, 0] }).setLngLat([a.lon, a.lat]).addTo(m));
+        }
+    }
+    aforosDe(c).then(l => {
+        if (mapa3d !== m) return;
+        aforos = l;
+        if (m.isStyleLoaded()) pintarAforosFicha(); else m.once("load", pintarAforosFicha);
+    }).catch(err => set("fc-aforos", `<span style="color:#ff6b6b;">No se pudieron leer los aforos: ${escapeHtml(err.message)}</span>`));
     document.querySelectorAll("#fc-per button").forEach(b => b.onclick = () => {
         document.querySelectorAll("#fc-per button").forEach(x => x.classList.toggle("on", x === b));
         horas = +b.dataset.h; pintarLluvia();
@@ -2836,6 +2886,160 @@ function saihPrec(e, h) {
     let mm = 0, k = 0;
     for (let j = 0; j < n; j++) if (e.t[j] > desde && e.v[j] != null) { mm += e.v[j]; k++; }
     return k * paso >= h * 60 * 0.75 ? mm : null;
+}
+
+// Aforos SAIH (caudal y nivel) dentro de la cuenca o a menos de 1 km del punto de cierre
+// (el aforo del cierre suele quedar justo en el borde). Ultimas 24 h de cada uno.
+async function cargarAforosCuenca(geom, punto) {
+    const [w, s, e, n] = turf.bbox(geom), bb = `${w - 0.01},${s - 0.01},${e + 0.01},${n + 0.01}`;
+    if (!await argosLogin()) throw new Error("no se pudo conectar con el Observatorio del Agua");
+    const [fq, fn] = await Promise.all([argosWfs(ARGOS_PF, "river_flow", bb), argosWfs(ARGOS_PL, "river_level", bb)]);
+    const porId = new Map();
+    for (const [f, k] of [...fq.map(f => [f, "q"]), ...fn.map(f => [f, "n"])]) {
+        const c = f.geometry?.coordinates;
+        if (!c) continue;
+        let a = porId.get(f.properties.id_element);
+        if (!a) {
+            const dist = punto ? turf.distance(punto, c) : null;
+            const dentro = (dist != null && dist < 1) || geom.features.some(g => { try { return turf.booleanPointInPolygon(c, g); } catch { return false; } });
+            if (!dentro) continue;
+            porId.set(f.properties.id_element, a = { id: f.properties.id_element, nombre: f.properties.name, demar: f.properties.cod_demar, lon: c[0], lat: c[1], dist, q: null, n: null, umb: [] });
+        }
+        a[k] = { t: [], v: [] };
+    }
+    const aforos = [...porId.values()], tareas = aforos.flatMap(a => ["q", "n"].filter(k => a[k]).map(k => [a, k]));
+    let i = 0;
+    const tarea = async () => {
+        while (i < tareas.length) {
+            const [a, k] = tareas[i++], c = await argosChart(k === "q" ? ARGOS_PF : ARGOS_PL, a.id);
+            if (c?.dates?.length) {
+                a[k] = { t: c.dates.map(x => Date.parse(x)), v: c.values.map(x => x == null ? null : +x) };
+                if (k === "n" && c.thresholds?.length) a.umb = c.thresholds.slice().sort((x, y) => x.value - y.value);
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: 8 }, tarea));
+    return aforos;
+}
+// Ultimo valor de una serie y su cambio respecto a h horas antes
+function ultimoYCambio(s, h) {
+    if (!s?.t.length) return null;
+    let j = s.t.length - 1;
+    while (j >= 0 && s.v[j] == null) j--;
+    if (j < 0) return null;
+    const desde = s.t[j] - h * 3600000;
+    let k = 0;
+    while (k < j && (s.t[k] < desde - 900000 || s.v[k] == null)) k++;
+    const cubre = s.t[k] <= desde + 1800000;
+    return { v: s.v[j], t: s.t[j], dif: cubre && k < j ? s.v[j] - s.v[k] : null };
+}
+// Color de aviso del ultimo nivel segun los umbrales de la confederacion
+function avisoAforo(a) {
+    const n = ultimoYCambio(a.n, 1);
+    let r = null;
+    if (n) for (const u of a.umb) if (n.v >= u.value) r = u;
+    return r;
+}
+const fmtQ = v => numES(v, v < 10 ? 2 : v < 100 ? 1 : 0);
+// Hidrograma de las ultimas 24 h (caudal, o nivel si no hay caudal) con los umbrales de nivel
+function graficoAforo(a, h) {
+    const k = a.q?.t.length ? "q" : "n", s = a[k];
+    if (!s?.t.length) return "";
+    const W = 340, H = 150, m = { l: 36, r: 10, t: 16, b: 20 };
+    const pts = s.t.map((t, i) => [t, s.v[i]]).filter(p => p[1] != null);
+    if (!pts.length) return "";
+    const t1 = pts[pts.length - 1][0], t0 = t1 - 24 * 3600000;
+    const umb = k === "n" ? a.umb : [];
+    let vmin = Math.min(...pts.map(p => p[1])), vmax = Math.max(...pts.map(p => p[1]));
+    if (umb.length) vmax = Math.max(vmax, Math.min(umb[0].value, vmax * 1.5));
+    if (vmax - vmin < 0.01) { vmax += 0.5; vmin = Math.max(0, vmin - 0.5); }
+    const pad = (vmax - vmin) * 0.1; vmin = Math.max(0, vmin - pad); vmax += pad;
+    const x = t => m.l + (W - m.l - m.r) * (t - t0) / (t1 - t0), y = v => m.t + (H - m.t - m.b) * (1 - (v - vmin) / (vmax - vmin));
+    const dec = vmax - vmin < 0.1 ? 3 : vmax < 10 ? 2 : vmax < 100 ? 1 : 0;
+    let g = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;" font-size="9" fill="#8892b0">`;
+    g += `<rect x="${x(t1 - h * 3600000)}" y="${m.t}" width="${x(t1) - x(t1 - h * 3600000)}" height="${H - m.t - m.b}" fill="#CE93D8" opacity="0.07"/>`;
+    [0, 0.5, 1].forEach(f => {
+        const v = vmin + (vmax - vmin) * f;
+        g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="#0f3460"/><text x="${m.l - 3}" y="${y(v) + 3}" text-anchor="end">${numES(v, dec)}</text>`;
+    });
+    for (const u of umb) if (u.value <= vmax) g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(u.value)}" y2="${y(u.value)}" stroke="${u.color}" stroke-dasharray="4 3"><title>Umbral ${u.conditionSymbol || "≥"} ${numES(u.value, 2)} m</title></line>`;
+    g += `<text x="2" y="${m.t - 6}" font-size="8">${k === "q" ? "m³/s" : "m"}</text>`;
+    for (let hh = 0; hh <= 24; hh += 6) { const t = t1 - hh * 3600000; g += `<text x="${x(t)}" y="${H - 6}" text-anchor="middle">${horaLocal(new Date(t))}</text>`; }
+    g += `<polyline points="${pts.filter(p => p[0] >= t0).map(p => `${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join(" ")}" fill="none" stroke="#CE93D8" stroke-width="2"/>`;
+    return g + "</svg>";
+}
+
+// Confederaciones de la lista de las que no llega ningun dato (las que no publican en el Observatorio)
+const demarSinDatos = (lista, tiene) => {
+    const d = new Map();
+    for (const x of lista) d.set(x.demar, (d.get(x.demar) || false) || tiene(x));
+    return [...d].filter(([, ok]) => !ok).map(([k]) => SAIH_DEMAR[k] || "su confederacion");
+};
+// Una sola descarga por cuenca, compartida por el panel lateral y la ficha
+const saihDe = c => c.pSaih ??= cargarSaihCuenca(c.geom);
+const aforosDe = c => c.pAforos ??= cargarAforosCuenca(c.geom, c.punto);
+
+// Panel lateral: aforos y pluviometros SAIH de la cuenca recien calculada, y sus marcas
+// en el mapa (dentro de cuencaLayer, asi se quitan con la cuenca)
+async function saihEnPanel() {
+    const c = cuencaActual, box = document.getElementById("result-box");
+    if (!c || !box) return;
+    const sal = document.createElement("span");
+    box.appendChild(sal);
+    sal.innerHTML = `\n\n<span class="r-label">Datos SAIH de la confederacion</span>\n<span class="r-info">Leyendo aforos y pluviometros...</span>`;
+    const [af, pl] = await Promise.all([aforosDe(c).catch(() => null), saihDe(c).catch(() => null)]);
+    if (cuencaActual !== c || !sal.isConnected) return;
+    const capa = cuencaLayer;
+    let h = `\n\n<span class="r-label">Datos SAIH de la confederacion</span>`;
+    const huecos = new Set();
+    // Aforos
+    if (af == null) h += `\n<span style="color:#ff6b6b;">No se pudieron leer los aforos.</span>`;
+    else {
+        const con = af.filter(a => a.q?.t.length || a.n?.t.length);
+        demarSinDatos(af, a => con.includes(a)).forEach(x => huecos.add(x));
+        const orden = a => a.dist != null && a.dist < 1 ? -1e9 + a.dist : -(ultimoYCambio(a.q, 24)?.v ?? -1);
+        con.sort((a, b) => orden(a) - orden(b));
+        if (!af.length) h += `\n<span class="r-info">No hay aforos SAIH en la cuenca.</span>`;
+        else if (con.length) {
+            h += `\n<span class="r-info">Caudal y nivel ahora (cambio en 24 h):</span>`;
+            for (const a of con.slice(0, 8)) {
+                const q = ultimoYCambio(a.q, 24), nv = ultimoYCambio(a.n, 24), av = avisoAforo(a);
+                const dif = (x, f) => x?.dif == null ? "" : ` <span class="r-info">(${Math.abs(x.dif) < 0.005 ? "=" : (x.dif > 0 ? "+" : "−") + f(Math.abs(x.dif))})</span>`;
+                h += `\n  <span style="color:${av?.color || "#4CAF50"}">●</span> ${escapeHtml(nombreEst(a.nombre))}${a.dist != null && a.dist < 1 ? ` <span class="r-info">(cierre)</span>` : ""}: `
+                    + [q ? `<b>${fmtQ(q.v)} m³/s</b>${dif(q, fmtQ)}` : "", nv ? `${numES(nv.v, 2)} m${dif(nv, v => numES(v, 2))}` : ""].filter(Boolean).join(" · ")
+                    + (av ? ` <span style="color:${av.color}">⚠ umbral</span>` : "");
+                if (capa) L.circleMarker([a.lat, a.lon], { radius: a.dist != null && a.dist < 1 ? 8 : 6, fillColor: av?.color || "#4CAF50", color: "#fff", weight: 2, fillOpacity: 0.95 })
+                    .bindTooltip(`${escapeHtml(nombreEst(a.nombre))}${q ? ` — ${fmtQ(q.v)} m³/s` : nv ? ` — ${numES(nv.v, 2)} m` : ""}`, { permanent: true, direction: "right", offset: [10, 0], className: "saih-label" })
+                    .addTo(capa);
+            }
+            if (con.length > 8) h += `\n  <span class="r-info">y ${con.length - 8} mas (en la ficha de la cuenca)</span>`;
+            if (af.length > con.length) h += `\n  <span class="r-info">${af.length - con.length} aforo${af.length - con.length > 1 ? "s" : ""} sin datos ahora.</span>`;
+        }
+    }
+    // Pluviometros
+    if (pl == null) h += `\n<span style="color:#ff6b6b;">No se pudieron leer los pluviometros.</span>`;
+    else if (pl.length) {
+        demarSinDatos(pl, e => e.t.length > 0).forEach(x => huecos.add(x));
+        const per = [1, 3, 6, 12, 24].map(hh => {
+            const v = pl.map(e => ({ e, mm: saihPrec(e, hh) })).filter(x => x.mm != null);
+            return { hh, n: v.length, media: v.length ? v.reduce((a, x) => a + x.mm, 0) / v.length : null, max: v.sort((a, b) => b.mm - a.mm)[0] };
+        }).filter(x => x.n);
+        if (per.length) {
+            const n = Math.max(...per.map(x => x.n)), d24 = per.find(x => x.hh === 24);
+            h += `\n<span class="r-info">Lluvia medida en ${n} pluviometro${n > 1 ? "s" : ""} (media · maximo):</span>\n  `
+                + per.map(x => `${x.hh} h: <b>${fmtMm(x.media)}</b> · ${fmtMm(x.max.mm)} mm`).join("\n  ")
+                + (d24?.max.mm > 0 ? `\n  <span class="r-info">El mas lluvioso en 24 h: ${escapeHtml(nombreEst(d24.max.e.nombre))}</span>` : "");
+            if (capa) for (const e of pl) {
+                const mm = saihPrec(e, 24);
+                if (mm == null) continue;
+                L.circleMarker([e.lat, e.lon], { radius: 5, fillColor: "#2E7D32", color: "#fff", weight: 1.5, fillOpacity: 0.95 })
+                    .bindTooltip(`${escapeHtml(nombreEst(e.nombre))}: ${numES(mm, 1)} mm en 24 h`, { direction: "right" }).addTo(capa);
+            }
+        }
+    } else h += `\n<span class="r-info">No hay pluviometros SAIH en la cuenca.</span>`;
+    if (huecos.size) h += `\n<span style="color:#FFB74D;">${[...huecos].join(", ")}: no publica sus datos en el Observatorio del Agua (${[af?.length ? `${af.length} aforos` : "", pl?.length ? `${pl.length} pluviometros` : ""].filter(Boolean).join(" y ")} en la cuenca, sin datos).</span>`;
+    h += `\n<span class="r-info" style="font-size:11px;">Fuente: SAIH de las confederaciones via Observatorio del Agua (MITECO), tiempo real sin validar. En el mapa: aforos con su caudal y pluviometros en verde.</span>`;
+    sal.innerHTML = h;
 }
 
 function lastVal(chart) { return chart?.dates?.length ? chart.values[chart.values.length - 1] : null; }
