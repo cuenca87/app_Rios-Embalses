@@ -313,13 +313,16 @@ function mitecoRutaProxy(url) {
     if (url.startsWith(MITECO_WMS_CORS + "?")) return MITECO_PROXY + "agua/wms" + url.slice(MITECO_WMS_CORS.length);
     return null;
 }
+// Los dias de partido, las operadoras espanolas bloquean IPs de Cloudflare por orden de
+// LaLiga, y con ellas los proxies *.workers.dev (comprobado el 17-oct-2026 en hayahora.futbol)
+const AVISO_BLOQUEO = "Si hay futbol, puede ser el bloqueo de LaLiga: las operadoras cortan IPs de Cloudflare durante los partidos (hayahora.futbol). Pruebe con otra conexion o cuando acabe el partido.";
 // "Failed to fetch" no dice que servidor fallo: se le anade el host
 function fetchConHost(input, init) {
     return _fetchOriginal(input, init).catch(e => {
         if (!(e instanceof TypeError)) throw e;
         let host = "";
         try { host = new URL(typeof input === "string" ? input : input.url, location.href).host; } catch (_) {}
-        throw new TypeError(`${e.message} (sin respuesta de ${host})`);
+        throw new TypeError(`${e.message} (sin respuesta de ${host})${/workers\.dev$/.test(host) ? ". " + AVISO_BLOQUEO : ""}`);
     });
 }
 window.fetch = async (input, init) => {
@@ -2730,7 +2733,7 @@ function saihSerie(k, id) {
         ? { t: r.dates.map(x => Date.parse(x)), v: r.values.map(x => x == null ? null : +x), umb: (r.thresholds || []).slice().sort((a, b) => a.value - b.value) }
         : null);
     saihSeries.set(clave, { t: Date.now(), p });
-    p.catch(() => saihSeries.delete(clave));
+    p.then(s => { if (!s && argosSinRed) saihSeries.delete(clave); }, () => saihSeries.delete(clave));
     return p;
 }
 let saihCapa = null, saihLeyenda = null, saihVar = "q", saihHoras = 3, saihGen = 0;
@@ -2796,6 +2799,7 @@ async function pintarSaih(soloMarcas) {
             if (hechas % 10 === 0) est(`Leyendo estaciones... ${hechas}/${enVista.length}`);
         }));
         if (gen !== saihGen || !saihCapa) return;
+        if (!n && argosSinRed) { est(`<span style="color:#FFB74D">${enVista.length} estaciones, sin valores: ${escapeHtml(msgArgos())}</span>`); return; }
         const huecos = demarSinDatos(enVista, e => !sinDatos.has(e.id));
         est(`${n} de ${enVista.length} estaciones con dato reciente${huecos.length ? `<br><span style="color:#FFB74D">${huecos.join(", ")}: no publica sus datos</span>` : ""}<span class="ll-ayuda"><br>Pulse una estacion para ver sus datos (en gris, sin dato)</span>`);
     } catch (err) { if (gen === saihGen) est(`<span style="color:#ff6b6b">No se pudo leer el SAIH: ${escapeHtml(err.message)}</span>`); }
@@ -2836,7 +2840,7 @@ async function popupSaih(k, e) {
     }
     const html = `<div style="font-size:12px;min-width:250px"><b>${escapeHtml(nombreEst(e.nombre))}</b> <span style="color:#777">(${SAIH_DEMAR[e.demar] || "SAIH"})</span><br>`
         + (filas.length ? `<span style="color:#777">Ultimo dato: ${cuando(tUlt)}</span><table style="margin-top:4px;border-collapse:collapse">${filas.map(([x, y]) => `<tr><td style="color:#555;padding-right:8px;vertical-align:top">${x}</td><td>${y}</td></tr>`).join("")}</table>${graf}`
-            : `<span style="color:#b00">Sin datos en el Observatorio del Agua${e.demar == 21 ? " (la CH Duero no los publica)" : ""}.</span>`)
+            : `<span style="color:#b00">${argosSinRed ? escapeHtml(msgArgos()) : `Sin datos en el Observatorio del Agua${e.demar == 21 ? " (la CH Duero no los publica)" : ""}.`}</span>`)
         + `<br><span style="color:#999;font-size:10px">SAIH via Observatorio del Agua (MITECO) · tiempo real sin validar</span></div>`;
     if (map.hasLayer(pop)) pop.setContent(html);
 }
@@ -3003,40 +3007,51 @@ async function buscarCercanos() {
 const ARGOS_BASE = "https://argos-hydro-proxy.riosyembalses.workers.dev";
 const ARGOS_API = ARGOS_BASE + "/api";
 const ARGOS_WFS = ARGOS_BASE + "/geoserver/wfs";
+// El WFS del Observatorio admite CORS (oct-2026) y no pide token: se llama directo y el
+// proxy queda de reserva. El login y las series siguen necesitando el proxy.
+const ARGOS_WFS_DIRECTO = "https://observatorio-dga.argos-hydro.com/geoserver/wfs";
 let argosToken = null, argosLayer = null, lastSaihResults = [];
+let argosSinRed = false, argosFalloT = 0;   // el proxy no responde (p. ej. bloqueo de LaLiga)
+// Tras un fallo de red no se reintenta en 1 min (cada intento tarda ~20 s en fallar)
+const argosCaido = () => argosSinRed && Date.now() - argosFalloT < 60000;
+const argosMarcarCaido = e => { if (e instanceof TypeError) { argosSinRed = true; argosFalloT = Date.now(); } };
+const msgArgos = () => argosSinRed ? `el proxy de Cloudflare no responde. ${AVISO_BLOQUEO}` : "no se pudo conectar con el Observatorio del Agua";
 
 async function argosLogin() {
     if (argosToken) return argosToken;
+    if (argosCaido()) return null;
     try {
         const r = await fetch(`${ARGOS_API}/Authorization`, {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ username: "Brcuenca", password: "MamaPato25" })
         });
+        argosSinRed = false;
         if (!r.ok) return null;
         argosToken = (await r.json()).accessToken;
         return argosToken;
-    } catch { return null; }
+    } catch (e) { argosMarcarCaido(e); return null; }
 }
 
 async function argosChart(productId, elementId) {
     const tk = await argosLogin();
-    if (!tk) return null;
+    if (!tk || argosCaido()) return null;
     try {
         const r = await fetch(`${ARGOS_API}/Map/chart/product/${productId}/element/${elementId}`, { headers: { Authorization: `Bearer ${tk}` } });
+        argosSinRed = false;
         if (!r.ok) return null;
         return await r.json();
-    } catch { return null; }
+    } catch (e) { argosMarcarCaido(e); return null; }
 }
 
 async function argosWfs(productId, iconType, bbox) {
-    const tk = await argosLogin();
-    if (!tk) return [];
-    try {
-        const url = `${ARGOS_WFS}?service=WFS&version=2.0.0&request=GetFeature&typeNames=argos:sensors&outputFormat=application/json&count=5000&viewParams=id_account:${ARGOS_ACCOUNT};id_product:${productId};icon_type:${iconType};icon_format:png;feature_type:product_sensors&bbox=${bbox},EPSG:4326`;
-        const r = await fetch(url, { headers: { Authorization: `Bearer ${tk}` } });
-        if (!r.ok) return [];
-        return (await r.json()).features || [];
-    } catch { return []; }
+    const q = `?service=WFS&version=2.0.0&request=GetFeature&typeNames=argos:sensors&outputFormat=application/json&count=5000&viewParams=id_account:${ARGOS_ACCOUNT};id_product:${productId};icon_type:${iconType};icon_format:png;feature_type:product_sensors&bbox=${bbox},EPSG:4326`;
+    for (const base of [ARGOS_WFS_DIRECTO, ARGOS_WFS]) {
+        try {
+            const r = await fetch(base + q);
+            if (r.ok) return (await r.json()).features || [];
+        } catch { }
+    }
+    return [];
 }
 
 // Pluviometros SAIH: el Observatorio del Agua da de cada uno las ultimas 24 h, con lo
@@ -3046,7 +3061,7 @@ const ARGOS_PP = "01929098-d109-7d01-8fa3-b23e468f9031";
 const SAIH_DEMAR = { 11: "CH Miño-Sil", 17: "CH Cantabrico (oriental)", 18: "CH Cantabrico", 21: "CH Duero", 31: "CH Tajo", 40: "CH Guadiana", 51: "CH Guadalquivir", 71: "CH Segura", 81: "CH Jucar", 91: "CH Ebro" };
 async function cargarSaihCuenca(geom) {
     const [w, s, e, n] = turf.bbox(geom);
-    if (!await argosLogin()) throw new Error("no se pudo conectar con el Observatorio del Agua");
+    if (!await argosLogin()) throw new Error(msgArgos());
     const fs = (await argosWfs(ARGOS_PP, "rain", `${w},${s},${e},${n}`)).filter(f => f.geometry?.coordinates &&
         geom.features.some(g => { try { return turf.booleanPointInPolygon(f.geometry.coordinates, g); } catch { return false; } }));
     const est = fs.map(f => ({ id: f.properties.id_element, nombre: f.properties.name, demar: f.properties.cod_demar, lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], t: [], v: [] }));
@@ -3077,7 +3092,7 @@ function saihPrec(e, h) {
 // (el aforo del cierre suele quedar justo en el borde). Ultimas 24 h de cada uno.
 async function cargarAforosCuenca(geom, punto) {
     const [w, s, e, n] = turf.bbox(geom), bb = `${w - 0.01},${s - 0.01},${e + 0.01},${n + 0.01}`;
-    if (!await argosLogin()) throw new Error("no se pudo conectar con el Observatorio del Agua");
+    if (!await argosLogin()) throw new Error(msgArgos());
     const [fq, fn] = await Promise.all([argosWfs(ARGOS_PF, "river_flow", bb), argosWfs(ARGOS_PL, "river_level", bb)]);
     const porId = new Map();
     for (const [f, k] of [...fq.map(f => [f, "q"]), ...fn.map(f => [f, "n"])]) {
@@ -3243,7 +3258,7 @@ async function buscarAforos(tipo) {
 
     try {
         const tk = await argosLogin();
-        if (!tk) { addResult(`\n<span style="color:#ff6b6b;">Error: no se pudo conectar con Argos</span>`); return; }
+        if (!tk) { addResult(`\n<span style="color:#ff6b6b;">Error: ${escapeHtml(msgArgos())}</span>`); return; }
 
         const useDownstream = lastDownstreamFeats && lastDownstreamFeats.length;
         const searchFeats = useDownstream ? lastDownstreamFeats : (lastGeoJSON?.features || []);
@@ -3340,7 +3355,7 @@ async function buscarDatosEmbalse() {
 
     try {
         const tk = await argosLogin();
-        if (!tk) { addResult(`\n<span style="color:#ff6b6b;">Error: no se pudo conectar con Argos</span>`); return; }
+        if (!tk) { addResult(`\n<span style="color:#ff6b6b;">Error: ${escapeHtml(msgArgos())}</span>`); return; }
 
         const bb = resultLayer.getBounds();
         const pad = 0.01;
@@ -3418,7 +3433,7 @@ async function buscarSaihAguasArriba() {
 
     try {
         const tk = await argosLogin();
-        if (!tk) { addResult(`\n<span style="color:#ff6b6b;">Error: no se pudo conectar con Argos</span>`); return; }
+        if (!tk) { addResult(`\n<span style="color:#ff6b6b;">Error: ${escapeHtml(msgArgos())}</span>`); return; }
 
         showProgress(10, "Calculando bbox aguas arriba...");
         const allBounds = L.latLngBounds([]);
@@ -3542,7 +3557,7 @@ async function buscarSaihAguasAbajo() {
 
     try {
         const tk = await argosLogin();
-        if (!tk) { addResult(`\n<span style="color:#ff6b6b;">Error: no se pudo conectar con Argos</span>`); return; }
+        if (!tk) { addResult(`\n<span style="color:#ff6b6b;">Error: ${escapeHtml(msgArgos())}</span>`); return; }
 
         showProgress(10, "Calculando bbox del recorrido...");
         const allBounds = L.latLngBounds([]);
