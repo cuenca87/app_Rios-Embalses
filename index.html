@@ -125,6 +125,8 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
 #fc-graf { margin-top:8px; }
 .fc-ae { display:flex; align-items:center; gap:3px; cursor:default; }
 .fc-ae i { width:9px; height:9px; border-radius:50%; background:#fff; border:2px solid #1565C0; box-sizing:border-box; flex:none; }
+.fc-sh i { border-color:#2E7D32; }
+.fc-sh span { background:rgba(46,125,50,.92) !important; }
 .fc-ae span { background:rgba(21,101,192,.9); color:#fff; font-size:10px; font-weight:700; padding:0 4px; border-radius:3px; white-space:nowrap; }
 .fc-marca { pointer-events:none; display:flex; align-items:center; gap:4px; }
 .fc-marca i { width:12px; height:12px; border-radius:50%; background:#E53935; border:2px solid #fff; box-sizing:border-box; flex:none; }
@@ -2070,6 +2072,7 @@ async function abrirFichaCuenca() {
 <div id="fc-grafico"></div>
 <div id="fc-notas" class="r-info" style="font-size:11px;"></div>
 <label>Pluviometros de AEMET en la cuenca</label><div id="fc-aemet" class="r-info" style="white-space:pre-wrap;">Leyendo AEMET...</div>
+<label>Pluviometros SAIH de la confederacion</label><div id="fc-saih" class="r-info" style="white-space:pre-wrap;">Leyendo el SAIH...</div>
 <label>Vista</label><div class="v3d-bts"><button id="v3d-2d" class="on">Planta</button><button id="v3d-3d">🏔️ 3D</button><button id="v3d-reset">Encuadrar</button><button id="v3d-giro" style="display:none">⟳ Girar</button></div>
 <div id="v3d-exbox" style="display:none;"><label>Exageracion del relieve: <span id="v3d-exv"></span></label><input type="range" id="v3d-ex" min="1" max="5" step="0.5"></div>
 <label>Fondo</label><div class="v3d-bts" id="v3d-fondo"><button data-f="orto" class="on">Ortofoto</button><button data-f="mapa">Mapa IGN</button><button id="v3d-rios" class="on">Red fluvial</button></div>
@@ -2227,6 +2230,7 @@ async function abrirFichaCuenca() {
         if (faltan) notas.push(`Faltan ${faltan} h de datos del radar.`);
         set("fc-notas", notas.join(" "));
         pintarAemetFicha();
+        pintarSaihFicha();
         // Marca del punto mas lluvioso
         marcaMax?.remove(); marcaMax = null;
         if (mx && mx.mm >= 0.1) {
@@ -2277,6 +2281,36 @@ async function abrirFichaCuenca() {
         aemetDentro = D.est.filter(e => c.geom.features.some(f => { try { return turf.booleanPointInPolygon([e.lon, e.lat], f); } catch { return false; } }));
         if (m.isStyleLoaded()) pintarAemetFicha(); else m.once("load", pintarAemetFicha);
     }).catch(err => set("fc-aemet", `<span style="color:#ff6b6b;">No se pudo leer AEMET: ${escapeHtml(err.message)}</span>`));
+    // Pluviometros SAIH de las confederaciones (Observatorio del Agua, via Argos)
+    let saihDentro = null, marcasSaih = [];
+    function pintarSaihFicha() {
+        marcasSaih.forEach(x => x.remove()); marcasSaih = [];
+        if (!saihDentro || mapa3d !== m) return;
+        if (!saihDentro.length) { set("fc-saih", "No hay pluviometros SAIH dentro de la cuenca."); return; }
+        const h = horas, vals = saihDentro.map(e => ({ e, mm: saihPrec(e, h) })).filter(x => x.mm != null).sort((a, b) => b.mm - a.mm);
+        for (const { e, mm } of vals) {
+            const el = document.createElement("div");
+            el.className = "fc-ae fc-sh";
+            el.innerHTML = `<i></i><span>${numES(mm, 1)}</span>`;
+            el.title = `${nombreEst(e.nombre)}: ${numES(mm, 1)} mm en ${h} h (SAIH)`;
+            marcasSaih.push(new maplibregl.Marker({ element: el, anchor: "left", offset: [-5, 0] }).setLngLat([e.lon, e.lat]).addTo(m));
+        }
+        const sin = saihDentro.length - vals.length;
+        const huecos = [...new Set(saihDentro.filter(e => !e.t.length).map(e => SAIH_DEMAR[e.demar] || "su confederacion"))];
+        const nota = huecos.length ? `<span style="color:#FFB74D">${huecos.join(", ")}: no publica sus pluviometros en el Observatorio del Agua.</span>\n` : "";
+        if (!vals.length) { set("fc-saih", `${nota}${saihDentro.length} pluviometros en la cuenca, sin datos de las ultimas ${h} h.`); return; }
+        const media = vals.reduce((a, x) => a + x.mm, 0) / vals.length;
+        set("fc-saih", nota
+            + `${vals.length} pluviometro${vals.length > 1 ? "s" : ""} · media ${fmtMm(media)} mm · max ${fmtMm(vals[0].mm)} mm en ${h} h${sin ? ` · ${sin} sin datos` : ""}\n`
+            + vals.slice(0, 8).map(x => `  ${escapeHtml(nombreEst(x.e.nombre))}: <b style="color:#e0e0e0">${numES(x.mm, 1)} mm</b>`).join("\n")
+            + (vals.length > 8 ? `\n  y ${vals.length - 8} mas` : "")
+            + `\n<span style="font-size:10px">SAIH de las confederaciones hidrograficas, via Observatorio del Agua (MITECO). En el mapa como etiquetas verdes. Datos cada 10-15 min sin validar.</span>`);
+    }
+    cargarSaihCuenca(c.geom).then(l => {
+        if (mapa3d !== m) return;
+        saihDentro = l;
+        if (m.isStyleLoaded()) pintarSaihFicha(); else m.once("load", pintarSaihFicha);
+    }).catch(err => set("fc-saih", `<span style="color:#ff6b6b;">No se pudo leer el SAIH: ${escapeHtml(err.message)}</span>`));
     document.querySelectorAll("#fc-per button").forEach(b => b.onclick = () => {
         document.querySelectorAll("#fc-per button").forEach(x => x.classList.toggle("on", x === b));
         horas = +b.dataset.h; pintarLluvia();
@@ -2768,6 +2802,40 @@ async function argosWfs(productId, iconType, bbox) {
         if (!r.ok) return [];
         return (await r.json()).features || [];
     } catch { return []; }
+}
+
+// Pluviometros SAIH: el Observatorio del Agua da de cada uno las ultimas 24 h, con lo
+// llovido en cada intervalo (10 o 15 min segun la confederacion). El Duero no los
+// publica y el Guadalquivir casi ninguno (oct-2026).
+const ARGOS_PP = "01929098-d109-7d01-8fa3-b23e468f9031";
+const SAIH_DEMAR = { 11: "CH Miño-Sil", 17: "CH Cantabrico (oriental)", 18: "CH Cantabrico", 21: "CH Duero", 31: "CH Tajo", 40: "CH Guadiana", 51: "CH Guadalquivir", 71: "CH Segura", 81: "CH Jucar", 91: "CH Ebro" };
+async function cargarSaihCuenca(geom) {
+    const [w, s, e, n] = turf.bbox(geom);
+    if (!await argosLogin()) throw new Error("no se pudo conectar con el Observatorio del Agua");
+    const fs = (await argosWfs(ARGOS_PP, "rain", `${w},${s},${e},${n}`)).filter(f => f.geometry?.coordinates &&
+        geom.features.some(g => { try { return turf.booleanPointInPolygon(f.geometry.coordinates, g); } catch { return false; } }));
+    const est = fs.map(f => ({ id: f.properties.id_element, nombre: f.properties.name, demar: f.properties.cod_demar, lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], t: [], v: [] }));
+    let i = 0;
+    const tarea = async () => {
+        while (i < est.length) {
+            const e = est[i++], c = await argosChart(ARGOS_PP, e.id);
+            if (c?.dates?.length) { e.t = c.dates.map(x => Date.parse(x)); e.v = c.values.map(x => x == null ? null : +x); }
+        }
+    };
+    await Promise.all(Array.from({ length: 8 }, tarea));
+    return est;
+}
+// mm de las ultimas h horas contadas desde el ultimo dato de la estacion; null si es de
+// hace mas de 3 h o si faltan mas del 25 % de los intervalos
+function saihPrec(e, h) {
+    const n = e.t.length;
+    if (n < 2 || Date.now() - e.t[n - 1] > 3 * 3600000) return null;
+    const difs = e.t.slice(1).map((x, j) => x - e.t[j]).sort((a, b) => a - b);
+    const paso = Math.max(5, Math.min(60, difs[difs.length >> 1] / 60000));
+    const desde = e.t[n - 1] - h * 3600000;
+    let mm = 0, k = 0;
+    for (let j = 0; j < n; j++) if (e.t[j] > desde && e.v[j] != null) { mm += e.v[j]; k++; }
+    return k * paso >= h * 60 * 0.75 ? mm : null;
 }
 
 function lastVal(chart) { return chart?.dates?.length ? chart.values[chart.values.length - 1] : null; }
