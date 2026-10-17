@@ -2607,9 +2607,9 @@ map.on("click", async e => {
 
 // --- Estaciones de AEMET (observacion convencional, ultimas ~12 h, cada hora) ---
 // AEMET OpenData: primero se pide la URL de los datos y luego los datos (ISO-8859-15).
-// Clave de cuenca87@gmail.com (la misma de la app del tiempo): caduca el 10-nov-2026,
+// Clave de cuenca87@gmail.com (la misma de la app del tiempo): caduca el 25-ene-2027,
 // se renueva en https://opendata.aemet.es/centrodedescargas/altaUsuario
-const AEMET_KEY = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjdWVuY2E4N0BnbWFpbC5jb20iLCJqdGkiOiJiMDhmNTQ1ZS0zMDU5LTRkNjctYTcxMS0zYTc4NzI1ODg1MjgiLCJleHAiOjE3OTQzMjAxMzEsImlzcyI6IkFFTUVUIiwiaWF0IjoxNzg1NjgwMTMxLCJ1c2VySWQiOiJiMDhmNTQ1ZS0zMDU5LTRkNjctYTcxMS0zYTc4NzI1ODg1MjgiLCJyb2xlIjoiIn0.y6cR46MlBZ2SVG_v3gPqCk84Vkn0HMx_E9ojRSwSLRw";
+const AEMET_KEY = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjdWVuY2E4N0BnbWFpbC5jb20iLCJqdGkiOiI5ZjBjMTAwNy0xMmJmLTRkNzYtYTljYS04ZGU0ZWNmY2Q4NzYiLCJleHAiOjE4MDA4OTg1ODMsImlzcyI6IkFFTUVUIiwiaWF0IjoxNzkyMjU4NTgzLCJ1c2VySWQiOiI5ZjBjMTAwNy0xMmJmLTRkNzYtYTljYS04ZGU0ZWNmY2Q4NzYiLCJyb2xlIjoiIn0.RWqggnUHrBl7noCWQGxt-l2pURQDqQoVR7Ippfa7zOI";
 const AEMET_OBS = "https://opendata.aemet.es/opendata/api/observacion/convencional/todas";
 let aemetCarga = null;   // { p: Promise, t }
 async function aemetJson(url) {
