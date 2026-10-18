@@ -122,6 +122,7 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
 .ll-mod { margin-top:-2px; }
 .ll-sin { display:inline-block; width:9px; height:9px; background:rgba(90,90,90,.6); vertical-align:middle; }
 #map.picking, #map.picking .leaflet-interactive { cursor:crosshair; }
+.red-hidro { filter:brightness(.5) saturate(5) drop-shadow(0 0 .5px #0040ff) drop-shadow(0 0 1.2px rgba(255,255,255,.95)); }
 /* Ventana de la cuenca en 3D */
 #v3d { position:fixed; inset:0; z-index:5000; background:#0b1022; display:flex; flex-direction:column; color:#e0e0e0; }
 #v3d-cab { display:flex; align-items:center; gap:10px; padding:8px 12px; background:#16213e; border-bottom:1px solid #0f3460; }
@@ -423,7 +424,13 @@ const map = L.map("map").setView([39.5, -3.0], 5);
 const pnoa = L.tileLayer("https://www.ign.es/wmts/pnoa-ma?layer=OI.OrthoimageCoverage&style=default&tilematrixset=GoogleMapsCompatible&Service=WMTS&Request=GetTile&Version=1.0.0&format=image/jpeg&TileMatrix={z}&TileRow={y}&TileCol={x}", { attribution:"PNOA &copy; IGN", maxZoom:19 });
 const ignBase = L.tileLayer.wms("https://www.ign.es/wms-inspire/ign-base?", { layers:"IGNBaseTodo", format:"image/png", transparent:false, attribution:"&copy; IGN" });
 const osm = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution:"&copy; OSM" });
-const redHidro = L.tileLayer.wms("https://servicios.idee.es/wms-inspire/hidrografia?", { layers:"HY.Network", format:"image/png", transparent:true, attribution:"&copy; IGN", opacity:0.25 });
+// Red hidrografica del IGN: sus lineas son celeste claro y finas, y sobre la ortofoto (o con
+// el fondo translucido) no se veian. Se pinta opaca y con un filtro (.red-hidro): azul intenso,
+// algo mas gruesa y con halo claro, para que destaque sobre cualquier fondo. Su opacidad se
+// elige con un deslizador del selector de capas (60 % de partida; se recuerda en el navegador).
+let opRed = 0.6;
+try { const v = localStorage.getItem("opRedHidro"); if (v !== null && !isNaN(+v)) opRed = +v; } catch { }
+const redHidro = L.tileLayer.wms("https://servicios.idee.es/wms-inspire/hidrografia?", { layers:"HY.Network", format:"image/png", transparent:true, attribution:"&copy; IGN", className:"red-hidro", opacity:opRed });
 pnoa.addTo(map);
 redHidro.addTo(map);
 const capasFondo = L.control.layers({"PNOA":pnoa,"IGN Base":ignBase,"OpenStreetMap":osm},{"Red hidrografica":redHidro}).addTo(map);
@@ -446,6 +453,18 @@ map.on("zoomend baselayerchange", aplicarOpFondo);
     r.oninput = () => { opFondo = r.value / 100; txt.textContent = r.value + " %"; aplicarOpFondo(); };
     d.querySelector("button").onclick = () => { opFondo = null; r.value = 100; txt.textContent = "automatica"; aplicarOpFondo(); };
     L.DomEvent.disableClickPropagation(d);
+    // Opacidad de la red hidrografica
+    const dr = document.createElement("div");
+    dr.className = "fondo-op";
+    dr.innerHTML = `<label>Opacidad de la red hidrografica: <b>${Math.round(opRed * 100)} %</b></label>
+<input type="range" min="0" max="100" step="5" value="${Math.round(opRed * 100)}">`;
+    d.appendChild(dr);
+    const rr = dr.querySelector("input"), tr = dr.querySelector("b");
+    rr.oninput = () => {
+        opRed = rr.value / 100; tr.textContent = rr.value + " %";
+        redHidro.setOpacity(opRed);
+        try { localStorage.setItem("opRedHidro", String(opRed)); } catch { }
+    };
 }
 
 // --- Demarcaciones (load once) ---
@@ -2334,7 +2353,8 @@ async function abrirFichaCuenca() {
                 { id: "orto", type: "raster", source: "orto" },
                 { id: "mapa", type: "raster", source: "mapa", layout: { visibility: "none" } },
                 { id: "sombra", type: "hillshade", source: "demSombra", layout: { visibility: "none" }, paint: { "hillshade-exaggeration": 0.4 } },
-                { id: "hidro", type: "raster", source: "hidro", paint: { "raster-opacity": 0.9 } },
+                // Mismo realce que en el mapa principal (sin halo: MapLibre no tiene filtros CSS por capa)
+                { id: "hidro", type: "raster", source: "hidro", paint: { "raster-opacity": 1, "raster-brightness-max": 0.5, "raster-saturation": 1, "raster-contrast": 0.3 } },
                 { id: "mascara", type: "fill", source: "mascara", paint: { "fill-color": "#000", "fill-opacity": 0.5 } },
                 { id: "cuenca", type: "line", source: "cuenca", paint: { "line-color": "#FFEB3B", "line-width": 3 } },
                 { id: "tramo", type: "line", source: "tramo", paint: { "line-color": "#00E5FF", "line-width": 4 } },
