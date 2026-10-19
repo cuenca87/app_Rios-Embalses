@@ -125,11 +125,14 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
 .red-hidro { filter:brightness(.5) saturate(5) drop-shadow(0 0 .5px #0040ff) drop-shadow(0 0 1.2px rgba(255,255,255,.95)); }
 /* Ventana de la cuenca en 3D */
 #v3d { position:fixed; inset:0; z-index:5000; background:#0b1022; display:flex; flex-direction:column; color:#e0e0e0; }
-#v3d-cab { display:flex; align-items:center; gap:10px; padding:8px 12px; background:#16213e; border-bottom:1px solid #0f3460; }
+#v3d-cab { display:flex; align-items:center; gap:10px; padding:8px 12px; padding-top:calc(8px + env(safe-area-inset-top, 0px)); background:#16213e; border-bottom:1px solid #0f3460; }
 #v3d-cab b { color:#64B5F6; font-size:14px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 #v3d-cab button { background:none; border:1px solid #0f3460; color:#e0e0e0; border-radius:4px; font-size:16px; padding:2px 10px; cursor:pointer; }
 #v3d-cuerpo { flex:1; display:flex; min-height:0; }
 #v3d-mapa { flex:1; position:relative; }
+.fc-lugar { color:#e0e0e0; font-size:13px; line-height:1.4; margin-bottom:4px; }
+.fc-lugar b { color:#64B5F6; }
+.fc-lugar span { color:#8892b0; font-size:11px; }
 .fc-sub { color:#8892b0; font-size:12px; margin-bottom:8px; }
 .fc-sub b { color:#e0e0e0; }
 .v3d-bts.fc-per button { flex:1 1 0; }
@@ -932,6 +935,91 @@ async function buscarArpsis(btnId) {
     } catch(e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${e.message}</span>`); }
     finally { hideProgress(); document.getElementById(btnId).disabled = false; }
 }
+
+// --- ARPSIs dentro de la cuenca vertiente dibujada (cuencaActual) ---
+// Se piden las de la caja de la cuenca (son ~3.100 lineas en toda Espana) y se
+// quedan las que cortan el contorno. "En parte" = algun vertice queda fuera
+// (tipico de la ARPSI que cruza el punto de cierre y sigue aguas abajo).
+// "Albal, Alzira, Carlet, ..." -> los 3 primeros y cuantos mas
+const cortaLista = (t, n = 3) => { const x = String(t).split(/\s*,\s*/); return x.length > n ? x.slice(0, n).join(", ") + ` y ${x.length - n} mas` : t; };
+async function arpsisEnPanel() {
+    const c = cuencaActual, box = document.getElementById("result-box");
+    if (!c || !box) return;
+    const sal = document.createElement("span");
+    box.appendChild(sal);
+    sal.innerHTML = `\n\n<span class="r-label">ARPSIs en la cuenca</span>\n<span class="r-info">Buscando...</span>`;
+    let hits;
+    try {
+        const piezas = c.geom.features.filter(f => /Polygon/.test(f.geometry?.type));
+        const cajas = piezas.map(f => turf.bbox(f));
+        const bb = turf.bbox(c.geom);
+        const cand = await fetchBbox(OGC_ARPSI, bb.join(","), PAGE_LIMIT);
+        const dentroDe = pt => piezas.some((f, i) => {
+            const b = cajas[i];
+            return pt[0] >= b[0] && pt[0] <= b[2] && pt[1] >= b[1] && pt[1] <= b[3] && turf.booleanPointInPolygon(pt, f);
+        });
+        hits = [];
+        for (const a of cand) {
+            const ab = turf.bbox(a);
+            const idx = cajas.map((b, i) => (ab[0] <= b[2] && ab[2] >= b[0] && ab[1] <= b[3] && ab[3] >= b[1]) ? i : -1).filter(i => i >= 0);
+            if (!idx.length) continue;
+            let corta = false;
+            try { corta = idx.some(i => turf.booleanIntersects(a, piezas[i])); } catch {}
+            if (!corta) continue;
+            hits.push({ f: a, parte: !turf.coordAll(a).every(dentroDe) });
+        }
+    } catch (e) {
+        if (sal.isConnected) sal.innerHTML = `\n\n<span class="r-label">ARPSIs en la cuenca</span>\n<span style="color:#ff6b6b;">No se pudieron leer las ARPSIs (${escapeHtml(e.message)}).</span>`;
+        return;
+    }
+    if (cuencaActual !== c || !sal.isConnected) return;
+    if (!hits.length) { sal.innerHTML = `\n\n<span class="r-label">ARPSIs en la cuenca</span>\n<span class="r-info">No hay ninguna ARPSI dentro de la cuenca.</span>`; return; }
+
+    // Una ARPSI puede venir en varios trozos: se agrupan por codigo; de mas larga a mas corta
+    const grupos = new Map();
+    for (const h of hits) {
+        const p = h.f.properties || {}, k = p.apsfr_code || p.apsf_name || String(grupos.size);
+        const g = grupos.get(k) || { p, feats: [], parte: false };
+        g.feats.push(h.f); g.parte = g.parte || h.parte; grupos.set(k, g);
+    }
+    const lista = [...grupos.values()].sort((a, b) => (+b.p.longitud_s || 0) - (+a.p.longitud_s || 0));
+    const km = lista.reduce((s, g) => s + (+g.p.longitud_s || 0), 0);
+    const capaA = L.featureGroup();
+    lista.forEach(g => {
+        const p = g.p;
+        g.capa = L.geoJSON(turf.featureCollection(g.feats), {
+            style: () => ({ color: "#FF9800", weight: 3.5, opacity: 0.95 })
+        }).bindPopup(`<b>ARPSI ${escapeHtml(p.apsfr_code || "-")}</b><br>${escapeHtml(p.nombre_sub || "")}${p.extension ? " · " + escapeHtml(p.extension) : ""}<br>${p.longitud_s != null ? numES(+p.longitud_s, 2) + " km · " : ""}${escapeHtml(p.origen_inu || "")}${g.parte ? "<br><i>Solo una parte queda dentro de la cuenca</i>" : ""}`)
+          .bindTooltip(escapeHtml(p.nombre_sub || p.apsfr_code || "ARPSI"), { sticky: true })
+          .addTo(capaA);
+    });
+    if (cuencaLayer) capaA.addTo(cuencaLayer);
+    c.arpsis = lista.flatMap(g => g.feats);
+    if (lastGeoJSON?.features) lastGeoJSON.features.push(...c.arpsis.map(f => ({ ...f, properties: { ...f.properties, tipo: "ARPSI" } })));
+
+    const MAXL = 40;
+    let h = `\n\n<span class="r-label">ARPSIs en la cuenca (${lista.length}, ${numES(km, 1)} km):</span>`;
+    lista.slice(0, MAXL).forEach((g, i) => {
+        const p = g.p;
+        h += `\n  <span class="r-arpsi-cu" data-i="${i}" style="cursor:pointer;color:#FFB74D;text-decoration:underline dotted;">${escapeHtml(p.apsfr_code || "-")}</span> ${escapeHtml(p.nombre_sub || "")}${p.extension ? ` <span class="r-info">(${escapeHtml(cortaLista(p.extension))})</span>` : ""}`
+            + ` <span class="r-info">${p.longitud_s != null ? numES(+p.longitud_s, 2) + " km" : ""}${p.origen_inu && p.origen_inu !== "Fluvial" ? " · " + escapeHtml(p.origen_inu) : ""}${g.parte ? " · en parte" : ""}</span>`;
+    });
+    if (lista.length > MAXL) h += `\n  <span class="r-info">y ${lista.length - MAXL} mas (todas en el mapa y en el GeoJSON descargable)</span>`;
+    if (lista.some(g => g.parte)) h += `\n<span class="r-info">"En parte": la ARPSI sale de la cuenca (normalmente sigue aguas abajo del punto de cierre).</span>`;
+    c.arpsiLista = lista;
+    // Si la ficha de esta cuenca ya esta abierta, se le pasan tambien
+    const m3 = mapa3d;
+    if (m3) { const poner = () => { if (mapa3d === m3 && cuencaActual === c) m3.getSource("arpsi")?.setData(turf.featureCollection(c.arpsis)); }; m3.isStyleLoaded() ? poner() : m3.once("load", poner); }
+    sal.innerHTML = h;
+}
+// Delegado: otras partes del panel reescriben result-box con innerHTML += y se perderian los listeners
+document.getElementById("result-box").addEventListener("click", e => {
+    const el = e.target.closest(".r-arpsi-cu");
+    const g = el && cuencaActual?.arpsiLista?.[+el.dataset.i];
+    if (!g || !cuencaLayer?.hasLayer) return;
+    map.fitBounds(g.capa.getBounds().pad(0.6), { maxZoom: 15 });
+    g.capa.openPopup();
+});
 
 const TRACE_COLORS = ["#E91E63","#9C27B0","#3F51B5","#009688","#FF5722","#795548"];
 function buildTraceColorMap(names) {
@@ -1789,7 +1877,8 @@ async function calcularCuencaPunto(lon, lat, opts = {}) {
             area_aguas_arriba_km2: +sr.area.toFixed(3), area_tramo_km2: +areaPropia.toFixed(3),
             n_subcuencas: sr.n + 1, cota_max_m: isFinite(cotaMax) ? cotaMax : null,
             cota_med_m: isFinite(cotaMed) && cotaMed > 0 ? Math.round(cotaMed) : null, cota_punto_m: cotaPunto,
-            metodo_tramo: corte ? `MDT ${corte.celda} m IGN` : "tramo completo", lon: +punto[0].toFixed(6), lat: +punto[1].toFixed(6)
+            metodo_tramo: corte ? `MDT ${corte.celda} m IGN` : "tramo completo", lon: +punto[0].toFixed(6), lat: +punto[1].toFixed(6),
+            cierre: opts.titulo || null
         };
         dibujarCuenca(geom, punto, tramo, info, geom ? null : sr.bbox);
 
@@ -1817,6 +1906,7 @@ async function calcularCuencaPunto(lon, lat, opts = {}) {
         pintar(h);
         lluviaAutomatica();
         saihEnPanel();
+        arpsisEnPanel();
         abrirFichaCuenca();
         showProgress(100, "Completado");
     } catch (e) {
@@ -1861,6 +1951,7 @@ async function cuencaRioCompleto() {
         box.innerHTML = box.innerHTML.replace(/\n\n<span class="r-label">Calculando cuenca vertiente del rio\.\.\.<\/span>$/, "") + h;
         lluviaAutomatica();
         saihEnPanel();
+        arpsisEnPanel();
         abrirFichaCuenca();
         showProgress(100, "Completado");
     } catch (e) { addResult(`\n<span style="color:#ff6b6b;">Error: ${escapeHtml(e.message)}</span>`); }
@@ -2255,6 +2346,9 @@ new MutationObserver(() => {
 const BOTON_FICHA = `<button class="action" onclick="abrirFichaCuenca()" style="background:linear-gradient(135deg,#33691E,#7CB342);">🗺️ Abrir ficha de la cuenca (lluvia y 3D)</button>`;
 const MAPLIBRE = "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl";
 let libMaplibre = null, mapa3d = null;
+// Opacidad de la red fluvial en la ficha (aparte de la del mapa principal: aqui va sobre la ortofoto a mas zoom)
+let opRedFicha = 0.45;
+try { const v = localStorage.getItem("opRedFicha"); if (v !== null && !isNaN(+v)) opRedFicha = +v; } catch { }
 function cargarMaplibre() {
     if (!libMaplibre) {
         const css = document.createElement("link");
@@ -2299,7 +2393,12 @@ async function abrirFichaCuenca() {
     if (!yaAbierta || !history.state?.v3d) history.pushState({ v3d: true }, "");
     const dato = (et, val) => val == null || val === "" ? "" : `<span class="r-label">${et}:</span> ${val}\n`;
     const cotaPunto = info.cota_punto_m, relieve = info.cota_max_m != null && cotaPunto != null ? info.cota_max_m - cotaPunto : null;
-    document.getElementById("v3d-panel").innerHTML = `<div class="fc-sub">drena <b>${fmtKm2(km2)} km²</b> hasta aqui<span id="fc-cob"></span></div>
+    const lugar = info.cierre ? info.cierre.replace(/^Cuenca vertiente de\s*/i, "")
+        : c.punto ? `punto de cierre ${c.punto[1].toFixed(4)}, ${c.punto[0].toFixed(4)}${cotaPunto != null ? ` (${numES(cotaPunto)} m)` : ""}`
+        : info.cod_pfafrio ? "cuenca completa, hasta la desembocadura" : "";
+    const demarF = c.punto ? findDemarcacion(c.punto[0], c.punto[1]) : null;
+    document.getElementById("v3d-panel").innerHTML = `<div class="fc-lugar">Cuenca vertiente${lugar ? ` · <b>${escapeHtml(lugar)}</b>` : ""}${demarF ? `<br><span>Demarcacion ${escapeHtml(demarF)}</span>` : ""}</div>
+<div class="fc-sub">Drena <b>${fmtKm2(km2)} km²</b> hasta aqui<span id="fc-cob"></span></div>
 <div class="v3d-bts fc-fu" id="fc-fu"><button data-fu="radar" class="on">Ha llovido<small>radar · ultimas 24 h</small></button><button data-fu="prev">Va a llover<small id="fc-fu-ar">prevision</small></button></div>
 <div class="v3d-bts fc-mod" id="fc-mod" style="display:none"></div>
 <div class="v3d-bts fc-per" id="fc-per"></div>
@@ -2314,6 +2413,7 @@ async function abrirFichaCuenca() {
 <label>Vista</label><div class="v3d-bts"><button id="v3d-2d" class="on">Planta</button><button id="v3d-3d">🏔️ 3D</button><button id="v3d-reset">Encuadrar</button><button id="v3d-giro" style="display:none">⟳ Girar</button></div>
 <div id="v3d-exbox" style="display:none;"><label>Exageracion del relieve: <span id="v3d-exv"></span></label><input type="range" id="v3d-ex" min="1" max="5" step="0.5"></div>
 <label>Fondo</label><div class="v3d-bts" id="v3d-fondo"><button data-f="orto" class="on">Ortofoto</button><button data-f="mapa">Mapa IGN</button><button id="v3d-rios" class="on">Red fluvial</button></div>
+<label>Opacidad de la red fluvial: <span id="v3d-ropv">${Math.round(opRedFicha * 100)} %</span></label><input type="range" id="v3d-ropr" min="0" max="100" step="5" value="${Math.round(opRedFicha * 100)}">
 <label>Opacidad de la lluvia: <span id="v3d-llopv">60 %</span></label><input type="range" id="v3d-llopr" min="0" max="100" step="5" value="60">
 <label>Datos de la cuenca</label><div style="white-space:pre-wrap;">${dato("Superficie", fmtKm2(km2) + " km²")}${dato("Cota maxima", info.cota_max_m != null ? numES(info.cota_max_m) + " m" : null)}${dato("Cota media", info.cota_med_m != null ? numES(info.cota_med_m) + " m" : null)}${dato("Cota del punto de cierre", cotaPunto != null ? numES(cotaPunto) + " m" : null)}${dato("Desnivel", relieve != null ? numES(relieve) + " m" : null)}${dato("Subcuencas Pfafstetter", info.n_subcuencas != null ? numES(info.n_subcuencas) : null)}</div>
 <p class="r-info" style="font-size:10px;margin-top:8px;">Pulse en el mapa para ver la cota. En 3D: arrastre con dos dedos o con el boton derecho para girar e inclinar.<br>Lluvia: compuesto OPERA de EUMETNET (radares de AEMET y vecinos, celdas de 2 km), CC BY 4.0. Estimacion de radar sin ajustar con pluviometros, con tope de 100 mm por hora y celda (granizo). Prevision: modelo AROME de Meteo-France (Etalab 2.0), salida directa en celdas de 2 km. Cuenca: MITECO. Ortofoto, mapa y red hidrografica © IGN. Relieve 3D: Terrain Tiles de AWS (SRTM / EU-DEM, ~30 m).</p>`;
@@ -2346,7 +2446,8 @@ async function abrirFichaCuenca() {
                 mascara: { type: "geojson", data: mascara },
                 cuenca: { type: "geojson", data: c.geom },
                 tramo: { type: "geojson", data: c.tramo || vacio },
-                punto: { type: "geojson", data: c.punto ? turf.point(c.punto) : vacio }
+                punto: { type: "geojson", data: c.punto ? turf.point(c.punto) : vacio },
+                arpsi: { type: "geojson", data: c.arpsis ? turf.featureCollection(c.arpsis) : vacio }
             },
             layers: [
                 { id: "fondo", type: "background", paint: { "background-color": "#0b1022" } },
@@ -2354,10 +2455,11 @@ async function abrirFichaCuenca() {
                 { id: "mapa", type: "raster", source: "mapa", layout: { visibility: "none" } },
                 { id: "sombra", type: "hillshade", source: "demSombra", layout: { visibility: "none" }, paint: { "hillshade-exaggeration": 0.4 } },
                 // Mismo realce que en el mapa principal (sin halo: MapLibre no tiene filtros CSS por capa)
-                { id: "hidro", type: "raster", source: "hidro", paint: { "raster-opacity": 1, "raster-brightness-max": 0.5, "raster-saturation": 1, "raster-contrast": 0.3 } },
+                { id: "hidro", type: "raster", source: "hidro", paint: { "raster-opacity": opRedFicha, "raster-brightness-max": 0.5, "raster-saturation": 1, "raster-contrast": 0.3 } },
                 { id: "mascara", type: "fill", source: "mascara", paint: { "fill-color": "#000", "fill-opacity": 0.5 } },
                 { id: "cuenca", type: "line", source: "cuenca", paint: { "line-color": "#FFEB3B", "line-width": 3 } },
                 { id: "tramo", type: "line", source: "tramo", paint: { "line-color": "#00E5FF", "line-width": 4 } },
+                { id: "arpsi", type: "line", source: "arpsi", paint: { "line-color": "#FF9800", "line-width": 4 } },
                 { id: "punto", type: "circle", source: "punto", paint: { "circle-radius": 7, "circle-color": "#E53935", "circle-stroke-color": "#fff", "circle-stroke-width": 2 } }
             ]
         },
@@ -2401,6 +2503,13 @@ async function abrirFichaCuenca() {
     });
     const rios = document.getElementById("v3d-rios");
     rios.onclick = () => { rios.classList.toggle("on"); m.setLayoutProperty("hidro", "visibility", rios.classList.contains("on") ? "visible" : "none"); };
+    const ropr = document.getElementById("v3d-ropr");
+    ropr.oninput = () => {
+        opRedFicha = +ropr.value / 100;
+        document.getElementById("v3d-ropv").textContent = ropr.value + " %";
+        m.setPaintProperty("hidro", "raster-opacity", opRedFicha);
+        try { localStorage.setItem("opRedFicha", String(opRedFicha)); } catch { }
+    };
     // Giro continuo alrededor de la cuenca (en 3D); se para al tocar el mapa
     const giro = document.getElementById("v3d-giro");
     let girando = false;
@@ -2505,7 +2614,7 @@ async function abrirFichaCuenca() {
         set("fc-media", mmMedia == null ? "sin datos" : `${fmtMm(mmMedia)} mm`);
         set("fc-max", mx ? `${fmtMm(mx.mm)} mm` : "-");
         const cob = coberturaCuenca(D, C, h);
-        set("fc-cob", cob >= 0.98 ? (prev ? "" : " · cobertura completa") : ` · ${prev ? `dentro de ${M.nombre}` : "cobertura"} el ${(cob * 100).toFixed(0)} %`);
+        set("fc-cob", cob >= 0.98 ? (prev ? "" : " · el radar la cubre entera") : ` · ${prev ? M.nombre : "el radar"} cubre el ${(cob * 100).toFixed(0)} %`);
         set("fc-hasta", prev
             ? `Proximas ${h} h, hasta el ${fechaHora(D.horas[i1 - 1].fin)}${h < hSel ? ` <span style="color:#FFB74D">(la prevision no llega a ${hSel} h)</span>` : ""}<br>${M.nombre}, ejecucion del ${fechaHora(D.ejecucion)}`
             : `Datos hasta las ${D.fin.toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} · ultimas ${h} h`);
