@@ -120,6 +120,26 @@ button.action:disabled { opacity:.4; cursor:not-allowed; }
 .ll-bts button[data-v] { font-size:10px; }
 .ll-bts button small { display:block; font-size:9px; opacity:.8; }
 .ll-mod { margin-top:-2px; }
+.lp-fechas { display:flex; gap:4px; margin:4px 0; }
+.lp-fechas label { flex:1 1 0; min-width:0; display:flex; flex-direction:column; font-size:10px; color:#8892b0; }
+.lp-fechas input { width:100%; box-sizing:border-box; background:#1a1a2e; color:#e0e0e0; border:1px solid #0f3460; border-radius:3px; font-size:11px; padding:2px; color-scheme:dark; min-width:0; }
+.lp-chk { display:flex; align-items:center; gap:4px; font-size:11px; margin:3px 0; cursor:pointer; }
+.lp-chk input { margin:0; accent-color:#29B6F6; }
+.lp-res { width:100%; margin-top:5px; padding:4px; border:1px solid #1565C0; border-radius:3px; background:#1565C0; color:#fff; font-size:11px; cursor:pointer; }
+.lp-res:disabled { opacity:.4; cursor:default; }
+#lp-res { position:fixed; inset:0; z-index:5000; background:#0b1022; color:#e0e0e0; display:flex; flex-direction:column; }
+#lp-res-cab { display:flex; align-items:center; gap:10px; padding:8px 12px; padding-top:calc(8px + env(safe-area-inset-top, 0px)); background:#16213e; border-bottom:1px solid #0f3460; }
+#lp-res-cab b { color:#64B5F6; font-size:16px; flex:1; }
+#lp-res-cab button { background:none; border:1px solid #0f3460; color:#e0e0e0; border-radius:4px; font-size:14px; padding:2px 10px; cursor:pointer; }
+#lp-res-cuerpo { flex:1; overflow:auto; padding:12px; max-width:900px; width:100%; margin:0 auto; box-sizing:border-box; }
+#lp-res-cuerpo .fc-stats b { font-size:18px; color:#e0e0e0; }
+.lp-tabla { width:100%; border-collapse:collapse; font-size:12px; margin-top:12px; }
+.lp-tabla th { text-align:left; color:#8892b0; font-weight:600; border-bottom:1px solid #0f3460; padding:4px; cursor:pointer; white-space:nowrap; position:sticky; top:-12px; background:#0b1022; }
+.lp-tabla th.on { color:#64B5F6; }
+.lp-tabla td { padding:3px 4px; border-bottom:1px solid #16213e; }
+.lp-tabla .n { text-align:right; }
+.lp-tabla tr[data-id] { cursor:pointer; }
+.lp-tabla tr[data-id]:hover { background:#16213e; }
 .ll-sin { display:inline-block; width:9px; height:9px; background:rgba(90,90,90,.6); vertical-align:middle; }
 #map.picking, #map.picking .leaflet-interactive { cursor:crosshair; }
 .red-hidro { filter:brightness(.5) saturate(5) drop-shadow(0 0 .5px #0040ff) drop-shadow(0 0 1.2px rgba(255,255,255,.95)); }
@@ -3085,6 +3105,372 @@ function alternarAemet() {
 let aemetZoomPrev = map.getZoom();
 map.on("moveend", () => { const z = map.getZoom(); if (aemetCapa && (z >= 8 || aemetZoomPrev >= 8)) pintarAemet(true); aemetZoomPrev = z; });
 
+// --- Lluvia de dias pasados (AEMET, valores climatologicos diarios) ---
+// AEMET publica el resumen diario de cada estacion (unas 830) con 3-4 dias de retraso. La API da
+// todas las estaciones de un periodo de hasta 15 dias por peticion: los periodos largos se piden
+// por tramos, de uno en uno. Las coordenadas salen del inventario de estaciones (grados-minutos-segundos).
+const AEMET_API = "https://opendata.aemet.es/opendata/api";
+const LP_MAX_DIAS = 92, LP_TRAMO = 15;
+const LP_VARS = {
+    total: { nom: "Total", tit: "Lluvia total del periodo", ud: "mm" },
+    max: { nom: "Max. en 1 dia", tit: "Lluvia del dia mas lluvioso", ud: "mm" },
+    dias: { nom: "Dias de lluvia", tit: "Dias con 0,1 mm o mas", ud: "dias",
+        esc: [[0, "#cfd8dc"], [1, "#b3e5fc"], [3, "#4fc3f7"], [5, "#1e88e5"], [10, "#43a047"], [15, "#fdd835"], [20, "#fb8c00"], [25, "#e53935"]] }
+};
+// Escala de mm: la misma de la capa de lluvia (radar), con gris para 0 mm
+const LP_ESC_MM = [[0, "#cfd8dc"], ...LLUVIA_ESCALA.map(([v, c]) => [v, `rgb(${c})`])];
+const lpEscala = () => LP_VARS[lpVar].esc || LP_ESC_MM;
+const fechaISO = d => d.toISOString().slice(0, 10);
+const sumarDias = (iso, n) => fechaISO(new Date(Date.parse(iso + "T12:00:00Z") + n * 86400000));
+const diasEntre = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000) + 1;
+const fechaCorta = iso => new Date(iso + "T12:00:00Z").toLocaleDateString("es-ES", { day: "numeric", month: "short", timeZone: "UTC" });
+const fechaLarga = iso => new Date(iso + "T12:00:00Z").toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+const gmsADec = s => { const h = s.slice(-1), d = s.slice(0, -1), v = +d.slice(0, -4) + +d.slice(-4, -2) / 60 + +d.slice(-2) / 3600; return h === "S" || h === "W" ? -v : v; };
+const numAemet = s => s == null || s === "" ? null : +String(s).replace(",", ".");
+
+let lpInventario = null;
+function lpEstaciones() {
+    return lpInventario ??= (async () => {
+        const meta = await aemetJson(`${AEMET_API}/valores/climatologicos/inventarioestaciones/todasestaciones?api_key=${AEMET_KEY}`);
+        if (!meta?.datos) throw new Error(meta?.descripcion || "AEMET no devolvio el inventario de estaciones");
+        const l = await aemetJson(meta.datos);
+        return new Map(l.map(e => [e.indicativo, { id: e.indicativo, nombre: e.nombre, prov: e.provincia, alt: +e.altitud, lat: gmsADec(e.latitud), lon: gmsADec(e.longitud) }]));
+    })().catch(e => { lpInventario = null; throw e; });
+}
+// Un tramo de hasta 15 dias: [indicativo, fecha, prec, tmax, tmin]. Los tramos con dias recientes
+// caducan a la hora (AEMET los va completando); los demas se guardan toda la sesion.
+const lpTramos = new Map();
+function lpTramo(ini, fin) {
+    const k = ini + "|" + fin, c = lpTramos.get(k);
+    if (c && (!c.reciente || Date.now() - c.t < 3600000)) return c.p;
+    const p = (async () => {
+        const meta = await aemetJson(`${AEMET_API}/valores/climatologicos/diarios/datos/fechaini/${ini}T00:00:00UTC/fechafin/${fin}T23:59:59UTC/todasestaciones?api_key=${AEMET_KEY}`);
+        if (meta?.estado === 404) return [];   // todavia sin publicar
+        if (!meta?.datos) throw new Error(meta?.descripcion || "AEMET no devolvio datos");
+        return (await aemetJson(meta.datos)).map(o => [o.indicativo, o.fecha, o.prec, numAemet(o.tmax), numAemet(o.tmin)]);
+    })();
+    lpTramos.set(k, { p, t: Date.now(), reciente: diasEntre(fin, fechaISO(new Date())) <= 8 });
+    p.catch(() => lpTramos.delete(k));
+    return p;
+}
+// { ini, fin, dias: [iso], ultimo: indice del ultimo dia publicado (-1 si ninguno), est: [...] }
+// Por estacion: mm, tmax, tmin por dia (NaN = sin dato; "Ip" inapreciable = 0) y sus totales
+async function cargarLluviaPasada(ini, fin, avance) {
+    const inv = await lpEstaciones();
+    const dias = Array.from({ length: diasEntre(ini, fin) }, (_, i) => sumarDias(ini, i));
+    const pos = new Map(dias.map((d, i) => [d, i])), porId = new Map(), nd = dias.length;
+    for (let a = 0; a < nd; a += LP_TRAMO) {
+        const b = Math.min(a + LP_TRAMO - 1, nd - 1);
+        avance?.(nd > LP_TRAMO ? `Descargando de AEMET... ${Math.round(100 * a / nd)} %` : "Descargando de AEMET...");
+        for (const [id, f, p, tx, tn] of await lpTramo(dias[a], dias[b])) {
+            const i = pos.get(f), m = inv.get(id);
+            if (i == null || !m) continue;
+            let e = porId.get(id);
+            if (!e) porId.set(id, e = { ...m, mm: new Float32Array(nd).fill(NaN), tmax: new Float32Array(nd).fill(NaN), tmin: new Float32Array(nd).fill(NaN) });
+            if (p === "Ip") e.mm[i] = 0; else if (p != null && p !== "Acum") e.mm[i] = numAemet(p);
+            if (tx != null) e.tmax[i] = tx;
+            if (tn != null) e.tmin[i] = tn;
+        }
+    }
+    const est = [...porId.values()];
+    let ultimo = -1;
+    for (const e of est) for (let i = nd - 1; i > ultimo; i--) if (!isNaN(e.mm[i])) { ultimo = i; break; }
+    for (const e of est) {
+        let n = 0, total = 0, max = -1, imax = -1, dias_ = 0;
+        for (let i = 0; i <= ultimo; i++) {
+            const v = e.mm[i];
+            if (isNaN(v)) continue;
+            n++; total += v; if (v >= 0.1) dias_++;
+            if (v > max) { max = v; imax = i; }
+        }
+        // estaciones con al menos el 80 % de los dias publicados; las incompletas se marcan
+        Object.assign(e, { n, total, max, imax, dias: dias_, valida: ultimo >= 0 && n >= Math.ceil(0.8 * (ultimo + 1)), completa: n === ultimo + 1 });
+    }
+    return { ini, fin, dias, ultimo, est };
+}
+const lpValor = (e, k = lpVar) => !e.valida ? null : k === "total" ? e.total : k === "max" ? e.max : e.dias;
+
+// Contorno de España (Natural Earth 1:50M, world-atlas) para que la superficie no se salga al mar
+let lpContorno = null;
+function contornoEspana() {
+    return lpContorno ??= (async () => {
+        await cargarScript("https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js");
+        const topo = await (await fetch("https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-50m.json")).json();
+        return topojson.feature(topo, topo.objects.countries).features.find(f => f.id === "724");
+    })().catch(() => { lpContorno = null; return null; });
+}
+// Superficie interpolada (inverso de la distancia al cuadrado, estaciones a menos de 60 km;
+// en blanco a mas de 35 km de la estacion mas cercana y fuera de España). Misma rejilla Web Mercator que el radar.
+async function lpImagen(D, k) {
+    const contorno = await contornoEspana();
+    const pts = D.est.filter(e => lpValor(e, k) != null).map(e => [e.lon, e.lat, lpValor(e, k)]);
+    const celdas = new Map(), clave = (x, y) => Math.floor(x * 2) + "," + Math.floor(y * 2);
+    for (const p of pts) { const c = clave(p[0], p[1]); (celdas.get(c) || celdas.set(c, []).get(c)).push(p); }
+    const [[s, w], [n, e]] = LLUVIA_BOUNDS, merc = lat => Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
+    const W = 600, H = Math.round(W * (merc(n) - merc(s)) / ((e - w) * Math.PI / 180));
+    const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+    const ctx = cv.getContext("2d"), im = ctx.createImageData(W, H), px = im.data;
+    const esc = (LP_VARS[k].esc || LP_ESC_MM).map(([v, c]) => { const t = document.createElement("span"); t.style.color = c; document.body.appendChild(t); const rgb = getComputedStyle(t).color.match(/\d+/g).map(Number); t.remove(); return [v, rgb]; });
+    for (let j = 0; j < H; j++) {
+        const lat = Math.atan(Math.sinh(merc(n) - (j + 0.5) / H * (merc(n) - merc(s)))) * 180 / Math.PI, kx = Math.cos(lat * Math.PI / 180) * 111.2;
+        const cy = Math.floor(lat * 2);
+        for (let i = 0; i < W; i++) {
+            const lon = w + (i + 0.5) / W * (e - w), cx = Math.floor(lon * 2);
+            let sw = 0, sv = 0, dmin = 1e9;
+            for (let a = cx - 1; a <= cx + 1; a++) for (let b = cy - 1; b <= cy + 1; b++) {
+                const l = celdas.get(a + "," + b);
+                if (l) for (const p of l) {
+                    const dx = (p[0] - lon) * kx, dy = (p[1] - lat) * 111.2, d2 = dx * dx + dy * dy;
+                    if (d2 > 3600) continue;
+                    if (d2 < dmin) dmin = d2;
+                    const wgt = 1 / Math.max(d2, 1);
+                    sw += wgt; sv += wgt * p[2];
+                }
+            }
+            if (!sw || dmin > 35 * 35) continue;
+            const v = sv / sw;
+            if (k !== "dias" && v < 0.1) continue;
+            let c = esc[0][1];
+            for (const [x, col] of esc) if (v >= x) c = col;
+            const q = 4 * (j * W + i);
+            px[q] = c[0]; px[q + 1] = c[1]; px[q + 2] = c[2]; px[q + 3] = 200;
+        }
+    }
+    ctx.putImageData(im, 0, 0);
+    if (contorno) {
+        // se deja solo lo que cae dentro del contorno
+        const X = lon => (lon - w) / (e - w) * W, Y = lat => (merc(n) - merc(lat)) / (merc(n) - merc(s)) * H;
+        const polis = contorno.geometry.type === "Polygon" ? [contorno.geometry.coordinates] : contorno.geometry.coordinates;
+        ctx.globalCompositeOperation = "destination-in";
+        ctx.beginPath();
+        for (const pol of polis) for (const anillo of pol) anillo.forEach(([lon, lat], i) => i ? ctx.lineTo(X(lon), Y(lat)) : ctx.moveTo(X(lon), Y(lat)));
+        ctx.fill("evenodd");
+    }
+    return cv.toDataURL("image/png");
+}
+
+// Grafico de una estacion: lluvia diaria en barras y temperaturas maxima y minima en lineas
+function graficoLp(D, e, ancho = 270) {
+    const nd = D.ultimo + 1, W = ancho, H = 120, m = { l: 26, r: 24, t: 12, b: 16 };
+    const bw = (W - m.l - m.r) / nd, mm = [...e.mm.slice(0, nd)];
+    const pmax = Math.max(1, ...mm.filter(v => !isNaN(v)));
+    const ts = [...e.tmax.slice(0, nd), ...e.tmin.slice(0, nd)].filter(v => !isNaN(v));
+    const tmin = ts.length ? Math.floor(Math.min(...ts)) - 1 : 0, tmax = ts.length ? Math.ceil(Math.max(...ts)) + 1 : 1;
+    const yp = v => m.t + (H - m.t - m.b) * (1 - v / pmax), yt = v => m.t + (H - m.t - m.b) * (1 - (v - tmin) / (tmax - tmin));
+    let g = `<svg viewBox="0 0 ${W} ${H}" width="${W}" style="display:block;margin-top:4px;max-width:100%" font-size="8" fill="#666">`;
+    g += `<text x="2" y="8" fill="#1e88e5">mm</text>${ts.length ? `<text x="${W - 2}" y="8" text-anchor="end" fill="#e53935">°C</text>` : ""}`;
+    g += `<text x="${m.l - 2}" y="${m.t + 3}" text-anchor="end" fill="#1e88e5">${numES(pmax, pmax < 10 ? 1 : 0)}</text><text x="${m.l - 2}" y="${H - m.b}" text-anchor="end" fill="#1e88e5">0</text>`;
+    if (ts.length) g += `<text x="${W - m.r + 2}" y="${m.t + 3}" fill="#e53935">${tmax}</text><text x="${W - m.r + 2}" y="${H - m.b}" fill="#e53935">${tmin}</text>`;
+    g += `<line x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}" stroke="#ccc"/>`;
+    const paso = Math.max(1, Math.ceil(nd / 8));
+    mm.forEach((v, i) => {
+        const x = m.l + i * bw;
+        if (isNaN(v)) g += `<text x="${x + bw / 2}" y="${H - m.b - 2}" text-anchor="middle" fill="#bbb" font-size="7">·</text>`;
+        else if (v > 0) g += `<rect x="${x + bw * .1}" y="${yp(v)}" width="${Math.max(bw * .8, 1)}" height="${H - m.b - yp(v)}" fill="#29b6f6"><title>${fechaCorta(D.dias[i])}: ${numES(v, 1)} mm</title></rect>`;
+        if (i % paso === 0) g += `<text x="${x + bw / 2}" y="${H - 4}" text-anchor="middle">${nd > 1 ? +D.dias[i].slice(8) : fechaCorta(D.dias[i])}</text>`;
+    });
+    const linea = (arr, col) => {
+        const pts = [...arr.slice(0, nd)].map((v, i) => isNaN(v) ? null : `${m.l + (i + 0.5) * bw},${yt(v)}`).filter(Boolean);
+        if (pts.length > 1) g += `<polyline points="${pts.join(" ")}" fill="none" stroke="${col}" stroke-width="1.5"/>`;
+        else if (pts.length === 1) { const [x, y] = pts[0].split(","); g += `<circle cx="${x}" cy="${y}" r="2.5" fill="${col}"/>`; }
+    };
+    linea(e.tmax, "#e53935"); linea(e.tmin, "#fb8c00");
+    return g + "</svg>";
+}
+const lpPeriodoTxt = D => D.ultimo < 0 ? "" : D.ultimo === 0 ? fechaLarga(D.dias[0]) : `del ${fechaCorta(D.dias[0])} al ${fechaCorta(D.dias[D.ultimo])} de ${D.dias[D.ultimo].slice(0, 4)}`;
+function popupLp(D, e) {
+    const nd = D.ultimo + 1;
+    const filas = [
+        ["Lluvia total", `<b>${numES(e.total, 1)} mm</b>${e.completa ? "" : ` <span style="color:#b26a00">(faltan ${nd - e.n} de ${nd} dias)</span>`}`],
+        nd > 1 ? ["Dia mas lluvioso", e.max > 0 ? `${numES(e.max, 1)} mm, ${fechaCorta(D.dias[e.imax])}` : "-"] : null,
+        nd > 1 ? ["Dias de lluvia", `${e.dias} de ${e.n}`] : null,
+        nd === 1 && !isNaN(e.tmax[0]) ? ["Temperatura", `max ${numES(e.tmax[0], 1)} · min ${numES(e.tmin[0], 1)} °C`] : null
+    ].filter(Boolean);
+    // tabla dia a dia (hasta un mes)
+    const tabla = nd > 1 && nd <= 31 ? `<div style="max-height:130px;overflow:auto;margin-top:4px;border-top:1px solid #eee"><table style="border-collapse:collapse;width:100%;font-size:11px">
+<tr style="color:#777"><td>Dia</td><td style="text-align:right">mm</td><td style="text-align:right">Max</td><td style="text-align:right">Min</td></tr>
+${D.dias.slice(0, nd).map((d, i) => `<tr${e.mm[i] >= 0.1 ? ` style="background:#e3f2fd"` : ""}><td>${fechaCorta(d)}</td><td style="text-align:right">${isNaN(e.mm[i]) ? "-" : numES(e.mm[i], 1)}</td><td style="text-align:right">${isNaN(e.tmax[i]) ? "-" : numES(e.tmax[i], 1)}</td><td style="text-align:right">${isNaN(e.tmin[i]) ? "-" : numES(e.tmin[i], 1)}</td></tr>`).join("")}</table></div>` : "";
+    return `<div style="font-size:12px;min-width:250px"><b>${escapeHtml(nombreEst(e.nombre))}</b> <span style="color:#777">(${e.id} · ${numES(e.alt || 0)} m · ${escapeHtml(nombreEst(e.prov))})</span><br>
+<span style="color:#777">${lpPeriodoTxt(D)}</span>
+<table style="margin-top:4px;border-collapse:collapse">${filas.map(([a, b]) => `<tr><td style="color:#555;padding-right:8px">${a}</td><td>${b}</td></tr>`).join("")}</table>
+${nd > 1 ? graficoLp(D, e) : ""}${tabla}<span style="color:#999;font-size:10px">Fuente: AEMET OpenData, valores climatologicos diarios</span></div>`;
+}
+
+let lpCapa = null, lpSup = null, lpLeyenda = null, lpVar = "total", lpGen = 0, lpDatos = null, lpConSup = true;
+const lpHoy = () => fechaISO(new Date());
+let lpFin = sumarDias(lpHoy(), -3), lpIni = lpFin, lpAuto = true;   // lpAuto: si aun no hay datos, se retrasa solo
+map.createPane("lpSuperficie").style.zIndex = 390;   // por debajo de las estaciones
+function htmlLeyendaLp(estado) {
+    const r = d => `<button data-lpr="${d}">${d === 1 ? "1 dia" : d + " dias"}</button>`;
+    const vs = Object.entries(LP_VARS).map(([k, x]) => `<button data-lpv="${k}" class="${k === lpVar ? "on" : ""}" title="${x.tit}">${x.nom}</button>`).join("");
+    const esc = lpEscala();
+    return `<div class="lp-fechas"><label>Desde<input type="date" id="lp-ini" value="${lpIni}" max="${lpHoy()}"></label><label>Hasta<input type="date" id="lp-fin" value="${lpFin}" max="${lpHoy()}"></label></div>
+<div class="ll-bts">${[1, 7, 15, 30].map(r).join("")}</div>
+<div class="ll-bts">${vs}</div>
+<label class="lp-chk"><input type="checkbox" id="lp-sup" ${lpConSup ? "checked" : ""}> Mapa de lluvia interpolado</label>
+<div class="ll-esc">${esc.map(([, c]) => `<span style="background:${c}"></span>`).join("")}</div><div class="ll-lab">${esc.map(([v]) => `<i>${v}</i>`).join("")}</div>
+<div class="ll-est">${estado}</div>
+<button class="lp-res" ${lpDatos?.ultimo >= 0 ? "" : "disabled"}>📊 Resumen, grafico y tabla</button>
+<div class="ll-fuente">AEMET OpenData · resumen diario, con 3-4 dias de retraso · ${LP_VARS[lpVar].ud}<br>Para las ultimas 24 h, la capa de radar</div>`;
+}
+function lpEnlazar(caja) {
+    const ini = caja.querySelector("#lp-ini"), fin = caja.querySelector("#lp-fin");
+    const cambio = () => {
+        let a = ini.value, b = fin.value;
+        if (!a || !b) return;
+        if (a > b) [a, b] = [b, a];
+        if (diasEntre(a, b) > LP_MAX_DIAS) a = sumarDias(b, -(LP_MAX_DIAS - 1));
+        lpIni = a; lpFin = b; lpAuto = false;
+        pintarLp();
+    };
+    ini.onchange = cambio; fin.onchange = cambio;
+    caja.querySelector("#lp-sup").onchange = ev => { lpConSup = ev.target.checked; pintarLp(true); };
+}
+async function pintarLp(soloMapa) {
+    if (!lpCapa) return;
+    const gen = ++lpGen, caja = lpLeyenda.getContainer(), est = t => { const e = caja.querySelector(".ll-est"); if (e) e.innerHTML = t; };
+    if (!soloMapa) { caja.innerHTML = htmlLeyendaLp("Cargando..."); lpEnlazar(caja); }
+    try {
+        const D = soloMapa && lpDatos ? lpDatos : await cargarLluviaPasada(lpIni, lpFin, t => gen === lpGen && est(t));
+        if (gen !== lpGen || !lpCapa) return;
+        // Sin nada publicado todavia en las fechas por defecto: se prueba un dia antes
+        if (D.ultimo < 0 && lpAuto && lpFin > sumarDias(lpHoy(), -7)) { lpFin = sumarDias(lpFin, -1); lpIni = sumarDias(lpIni, -1); return pintarLp(); }
+        lpDatos = D;
+        if (!soloMapa) { caja.innerHTML = htmlLeyendaLp(""); lpEnlazar(caja); }
+        lpCapa.clearLayers();
+        if (lpSup) { map.removeLayer(lpSup); lpSup = null; }
+        if (D.ultimo < 0) { est(`<span style="color:#FFB74D">AEMET aun no ha publicado datos de esas fechas</span>`); return; }
+        const esc = lpEscala(), x = LP_VARS[lpVar], etiquetas = map.getZoom() >= 8, vista = map.getBounds().pad(0.2);
+        const dec = lpVar === "dias" ? 0 : 1;
+        let n = 0, mx = null;
+        for (const e of D.est) {
+            const v = lpValor(e);
+            if (v == null) continue;
+            n++;
+            if (!mx || v > lpValor(mx)) mx = e;
+            const col = colorEsc(esc, v), borde = e.completa ? "" : ";border-style:dashed";
+            const capa = etiquetas && vista.contains([e.lat, e.lon])
+                ? L.marker([e.lat, e.lon], { icon: L.divIcon({ className: "ae-et", html: `<span style="background:${col};color:${textoSobre(col.startsWith("rgb") ? "#" + col.match(/\d+/g).map(c => (+c).toString(16).padStart(2, "0")).join("") : col)}${borde}">${fmtVar(v, dec)}</span>`, iconSize: null }), zIndexOffset: Math.round(v * 10) })
+                : L.circleMarker([e.lat, e.lon], { radius: 5, color: "#1a1a2e", weight: 1, fillColor: col, fillOpacity: 0.95, dashArray: e.completa ? null : "2 2" });
+            capa.on("click", ev => { L.DomEvent.stop(ev); L.popup({ maxWidth: 320 }).setLatLng([e.lat, e.lon]).setContent(popupLp(D, e)).openOn(map); });
+            capa.addTo(lpCapa);
+        }
+        if (lpConSup) {
+            const url = await lpImagen(D, lpVar);
+            if (gen !== lpGen || !lpCapa) return;
+            lpSup = L.imageOverlay(url, LLUVIA_BOUNDS, { pane: "lpSuperficie", opacity: 0.7 }).addTo(map);
+        }
+        const pend = D.dias.length - 1 - D.ultimo;
+        est(`${lpPeriodoTxt(D)} · ${n} estaciones${mx ? `<br>Maximo: <b>${fmtVar(lpValor(mx), dec)} ${x.ud}</b> en ${escapeHtml(nombreEst(mx.nombre))}` : ""}`
+            + (pend > 0 ? `<br><span style="color:#FFB74D">AEMET aun no ha publicado ${pend === 1 ? "el ultimo dia" : `los ultimos ${pend} dias`}</span>` : "")
+            + `<span class="ll-ayuda"><br>${etiquetas ? "" : "Acerque el mapa para ver los valores · "}pulse una estacion para ver su grafico</span>`);
+    } catch (err) { if (gen === lpGen) est(`<span style="color:#ff6b6b">No se pudo leer AEMET: ${escapeHtml(err.message)}</span>`); }
+}
+function lpRango(nd) {
+    // periodo de nd dias que acaba en el ultimo dia publicado
+    const fin = lpDatos?.ultimo >= 0 ? lpDatos.dias[lpDatos.ultimo] : lpFin;
+    lpFin = fin; lpIni = sumarDias(fin, -(nd - 1)); lpAuto = !lpDatos || lpDatos.ultimo < 0;
+    pintarLp();
+}
+function alternarLp() {
+    if (lpCapa) {
+        map.removeLayer(lpCapa); if (lpSup) map.removeLayer(lpSup);
+        marcarCapa("pasada", false);
+        lpCapa = lpSup = lpLeyenda = null; lpGen++;
+        return;
+    }
+    marcarCapa("pasada", true);
+    lpCapa = L.layerGroup().addTo(map);
+    lpLeyenda = { getContainer: () => cuerpoCapa("pasada") };
+    pintarLp();
+}
+let lpZoomPrev = map.getZoom();
+map.on("moveend", () => { const z = map.getZoom(); if (lpCapa && lpDatos && (z >= 8 || lpZoomPrev >= 8)) pintarLp(true); lpZoomPrev = z; });
+
+// Ventana de resumen: estaciones de la cuenca (si hay una dibujada y tiene estaciones) o las del
+// mapa a la vista; lluvia media de cada dia en un grafico y la tabla de estaciones, ordenable y en CSV
+function lpAmbito(D) {
+    const validas = D.est.filter(e => e.valida);
+    if (cuencaActual?.geom) {
+        const dentro = validas.filter(e => cuencaActual.geom.features.some(f => turf.booleanPointInPolygon([e.lon, e.lat], f)));
+        if (dentro.length) return { lista: dentro, txt: `estaciones dentro de la cuenca${cuencaActual.info?.cierre ? ` (${escapeHtml(cuencaActual.info.cierre)})` : ""}` };
+    }
+    const vista = map.getBounds();
+    return { lista: validas.filter(e => vista.contains([e.lat, e.lon])), txt: "estaciones del mapa a la vista" };
+}
+function abrirResumenLp() {
+    const D = lpDatos;
+    if (!D || D.ultimo < 0) return;
+    const { lista, txt } = lpAmbito(D), nd = D.ultimo + 1;
+    document.getElementById("lp-res")?.remove();
+    const div = document.createElement("div");
+    div.id = "lp-res";
+    let orden = "total", desc = true;
+    const cab = `<div id="lp-res-cab"><b>Lluvia ${lpPeriodoTxt(D)}</b><button id="lp-csv" title="Descargar la tabla">⬇ CSV</button><button id="lp-cerrar" title="Cerrar">✕</button></div>`;
+    if (!lista.length) {
+        div.innerHTML = cab + `<div id="lp-res-cuerpo"><p>No hay estaciones de AEMET con datos en esta zona. Aleje el mapa o muevalo.</p></div>`;
+    } else {
+        // media de las estaciones y maximo de cada dia
+        const media = [], maxD = [];
+        for (let i = 0; i < nd; i++) {
+            const v = lista.map(e => e.mm[i]).filter(x => !isNaN(x));
+            media.push(v.length ? v.reduce((a, b) => a + b, 0) / v.length : NaN);
+            maxD.push(v.length ? Math.max(...v) : NaN);
+        }
+        const total = lista.reduce((a, e) => a + e.total, 0) / lista.length;
+        const top = lista.reduce((a, e) => e.total > a.total ? e : a);
+        const W = 640, H = 170, m = { l: 34, r: 8, t: 14, b: 22 }, bw = (W - m.l - m.r) / nd;
+        const vmax = Math.max(1, ...maxD.filter(v => !isNaN(v)));
+        const y = v => m.t + (H - m.t - m.b) * (1 - v / vmax);
+        let g = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;display:block" font-size="10" fill="#8892b0">`;
+        for (const f of [0, .5, 1]) g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(vmax * f)}" y2="${y(vmax * f)}" stroke="#24345e"/><text x="${m.l - 4}" y="${y(vmax * f) + 3}" text-anchor="end">${numES(vmax * f, vmax < 10 ? 1 : 0)}</text>`;
+        const paso = Math.max(1, Math.ceil(nd / 12));
+        media.forEach((v, i) => {
+            const x = m.l + i * bw;
+            if (!isNaN(maxD[i]) && maxD[i] > 0) g += `<rect x="${x + bw * .15}" y="${y(maxD[i])}" width="${bw * .7}" height="${H - m.b - y(maxD[i])}" fill="#1e88e5" opacity=".35"><title>${fechaCorta(D.dias[i])}: maximo ${numES(maxD[i], 1)} mm</title></rect>`;
+            if (!isNaN(v) && v > 0) g += `<rect x="${x + bw * .15}" y="${y(v)}" width="${bw * .7}" height="${H - m.b - y(v)}" fill="#29b6f6"><title>${fechaCorta(D.dias[i])}: media ${numES(v, 1)} mm</title></rect>`;
+            if (i % paso === 0) g += `<text x="${x + bw / 2}" y="${H - 6}" text-anchor="middle">${fechaCorta(D.dias[i])}</text>`;
+        });
+        g += `<text x="${m.l}" y="10">mm</text></svg>`;
+        const filas = () => lista.slice().sort((a, b) => {
+            const va = orden === "nombre" ? nombreEst(a.nombre) : orden === "prov" ? a.prov : a[orden], vb = orden === "nombre" ? nombreEst(b.nombre) : orden === "prov" ? b.prov : b[orden];
+            return (typeof va === "string" ? va.localeCompare(vb, "es") : va - vb) * (desc ? -1 : 1);
+        }).map(e => `<tr data-id="${e.id}"><td>${escapeHtml(nombreEst(e.nombre))}${e.completa ? "" : ` <span title="faltan ${nd - e.n} dias" style="color:#FFB74D">*</span>`}</td><td>${escapeHtml(nombreEst(e.prov))}</td><td class="n"><b>${numES(e.total, 1)}</b></td>${nd > 1 ? `<td class="n">${e.max > 0 ? numES(e.max, 1) : "-"}</td><td>${e.max > 0 ? fechaCorta(D.dias[e.imax]) : ""}</td><td class="n">${e.dias}</td>` : ""}</tr>`).join("");
+        const th = (k, t) => `<th data-o="${k}" class="${k === orden ? "on" : ""}${["total", "max", "dias"].includes(k) ? " n" : ""}">${t}${k === orden ? (desc ? " ▾" : " ▴") : ""}</th>`;
+        const tabla = () => `<table class="lp-tabla"><tr>${th("nombre", "Estacion")}${th("prov", "Provincia")}${th("total", "Total mm")}${nd > 1 ? th("max", "Max. dia") + "<th>Fecha</th>" + th("dias", "Dias lluvia") : ""}</tr>${filas()}</table>`;
+        div.innerHTML = cab + `<div id="lp-res-cuerpo">
+<div class="fc-sub">${lista.length} ${txt}</div>
+<div class="fc-stats"><div><small>Lluvia media</small><b>${numES(total, 1)} mm</b></div><div><small>Estacion mas lluviosa</small><b>${numES(top.total, 1)} mm</b> <span style="font-size:11px;color:#8892b0">${escapeHtml(nombreEst(top.nombre))}</span></div></div>
+${nd > 1 ? `<div class="fc-sub" style="margin-top:10px">Lluvia de cada dia: <span style="color:#29b6f6">■</span> media de las estaciones · <span style="color:#1e88e5;opacity:.6">■</span> la estacion mas lluviosa</div>${g}` : ""}
+<div id="lp-tabla">${tabla()}</div>
+<div class="ll-fuente">AEMET OpenData, valores climatologicos diarios · * estacion con dias sin dato · pulse una fila para verla en el mapa</div></div>`;
+        div.addEventListener("click", ev => {
+            const t = ev.target.closest("th[data-o]"), tr = ev.target.closest("tr[data-id]");
+            if (t) { const o = t.dataset.o; desc = o === orden ? !desc : !["nombre", "prov"].includes(o); orden = o; div.querySelector("#lp-tabla").innerHTML = tabla(); }
+            else if (tr) {
+                const e = lista.find(x => x.id === tr.dataset.id);
+                cerrarResumenLp();
+                map.setView([e.lat, e.lon], Math.max(map.getZoom(), 10));
+                L.popup({ maxWidth: 320 }).setLatLng([e.lat, e.lon]).setContent(popupLp(D, e)).openOn(map);
+            }
+        });
+    }
+    document.body.appendChild(div);
+    div.querySelector("#lp-cerrar").onclick = cerrarResumenLp;
+    const csv = div.querySelector("#lp-csv");
+    if (!lista.length) csv.remove();
+    else csv.onclick = () => {
+        const esc_ = s => `"${String(s).replace(/"/g, '""')}"`, dec = v => isNaN(v) ? "" : String(Math.round(v * 10) / 10).replace(".", ",");
+        const l = [["Indicativo", "Estacion", "Provincia", "Altitud", "Latitud", "Longitud", "Total mm", "Max. dia mm", "Fecha max.", "Dias de lluvia", "Dias con dato", ...D.dias.slice(0, nd)].map(esc_).join(";"),
+            ...lista.map(e => [e.id, nombreEst(e.nombre), nombreEst(e.prov), e.alt, e.lat.toFixed(5), e.lon.toFixed(5), dec(e.total), dec(e.max), e.imax >= 0 ? D.dias[e.imax] : "", e.dias, e.n, ...[...e.mm.slice(0, nd)].map(dec)].map((v, i) => i < 3 || i === 8 ? esc_(v) : v).join(";"))];
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob(["﻿" + l.join("\r\n")], { type: "text/csv" }));
+        a.download = `lluvia_aemet_${D.dias[0]}_${D.dias[D.ultimo]}.csv`; a.click();
+    };
+}
+function cerrarResumenLp() { document.getElementById("lp-res")?.remove(); }
+document.addEventListener("keydown", e => { if (e.key === "Escape") cerrarResumenLp(); });
+
 // --- Capa SAIH (Observatorio del Agua, via el proxy de Argos) ---
 // Cada serie es una peticion al Worker de Cloudflare (cuota diaria): la red completa se
 // pinta con la lista de estaciones (una peticion por variable) y los valores solo se piden
@@ -3254,6 +3640,7 @@ map.on("moveend", () => { if (!saihCapa) return; clearTimeout(saihMover); saihMo
 const CAPAS_DATOS = [
     ["lluvia", "🌧️", "Lluvia: radar y prevision", "mm acumulados: ultimas 24 h (radar OPERA) y proximas 48 h (modelo AROME)", () => alternarCapaLluvia()],
     ["aemet", "🌡️", "Estaciones de AEMET", "temperatura, lluvia, viento, humedad", () => alternarAemet()],
+    ["pasada", "📅", "Lluvia de dias pasados", "lo que llovio un dia o un periodo concreto (estaciones de AEMET)", () => alternarLp()],
     ["saih", "🌊", "SAIH de las confederaciones", "caudal, nivel, lluvia, temperatura", () => alternarSaih()]
 ];
 const panelCapas = L.control({ position: "bottomright" });
@@ -3278,6 +3665,9 @@ panelCapas.onAdd = () => {
         else if (k === "lluvia" && t.closest("[data-mod]")) { lluviaFuente = modeloSel = t.closest("[data-mod]").dataset.mod; pintarCapaLluvia(); }
         else if (k === "aemet" && t.dataset?.v) { aemetVar = t.dataset.v; pintarAemet(); }
         else if (k === "aemet" && t.dataset?.h) { aemetHoras = +t.dataset.h; pintarAemet(); }
+        else if (k === "pasada" && t.dataset?.lpr) lpRango(+t.dataset.lpr);
+        else if (k === "pasada" && t.dataset?.lpv) { lpVar = t.dataset.lpv; pintarLp(); }
+        else if (k === "pasada" && t.classList.contains("lp-res")) abrirResumenLp();
         else if (k === "saih" && t.dataset?.sv) { saihVar = t.dataset.sv; pintarSaih(); }
         else if (k === "saih" && t.dataset?.sh) { saihHoras = +t.dataset.sh; pintarSaih(); }
     });
